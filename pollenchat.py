@@ -154,6 +154,92 @@ API_BASE = "https://text.pollinations.ai/openai"
 IMAGE_BASE = "https://image.pollinations.ai/prompt"
 MODELS_URL = "https://text.pollinations.ai/models"
 
+# ============ PROVIDERS ============
+# Registry of OpenAI-compatible chat services. Keep only slow-changing facts here
+# (URLs, key env var names); model lists are fetched from the service at runtime.
+#   chat_url  : full chat-completions endpoint (${VAR} is expanded from the environment)
+#   models_url: model list endpoint, or None if unavailable (manual model ID entry)
+#   key_env   : environment variable holding the API key, or None (no key needed)
+#   rate_hint : shown on HTTP 429
+PROVIDERS: dict[str, dict[str, Optional[str]]] = {
+    "pollinations": {
+        "label": "PollinationsAI",
+        "chat_url": API_BASE,
+        "models_url": MODELS_URL,
+        "key_env": None,
+        "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
+    },
+    "nvidia": {
+        "label": "NVIDIA",
+        "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "models_url": "https://integrate.api.nvidia.com/v1/models",
+        "key_env": "NVIDIA_API_KEY",
+        "rate_hint": "NVIDIA free credits / rate limit reached. Wait a moment and retry.",
+    },
+    "mistral": {
+        "label": "Mistral",
+        "chat_url": "https://api.mistral.ai/v1/chat/completions",
+        "models_url": "https://api.mistral.ai/v1/models",
+        "key_env": "MISTRAL_API_KEY",
+        "rate_hint": "Mistral free-tier rate limit reached. Wait a moment and retry.",
+    },
+    "cloudflare": {
+        "label": "Cloudflare Workers AI",
+        "chat_url": "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions",
+        "models_url": None,
+        "key_env": "CLOUDFLARE_API_TOKEN",
+        "rate_hint": "Cloudflare daily free allocation may be used up (resets 00:00 UTC). Retry later.",
+    },
+}
+DEFAULT_PROVIDER = "pollinations"
+
+def split_model(full: str) -> tuple[str, str]:
+    """'nvidia/meta/llama-3.1-70b-instruct' -> ('nvidia', 'meta/llama-3.1-70b-instruct').
+
+    Only a registered first segment counts as a provider; anything else
+    (e.g. a bare 'openai') is a PollinationsAI model name, so old configs keep working.
+    """
+    head, sep, rest = full.partition("/")
+    if sep and rest and head in PROVIDERS:
+        return head, rest
+    return DEFAULT_PROVIDER, full
+
+def get_api_key(provider: str) -> Optional[str]:
+    env = PROVIDERS[provider].get("key_env")
+    if not env:
+        return None
+    return os.environ.get(env) or None
+
+def _expand_env(text: str) -> tuple[str, list[str]]:
+    """Expand ${VAR} from the environment. Returns (text, names of missing variables)."""
+    missing: list[str] = []
+    def repl(m: re.Match) -> str:
+        val = os.environ.get(m.group(1))
+        if not val:
+            missing.append(m.group(1))
+            return ""
+        return val
+    return re.sub(r"\$\{([A-Za-z0-9_]+)\}", repl, text), missing
+
+def resolve_request(full_model: str) -> Optional[tuple[str, str, dict[str, str]]]:
+    """Return (url, model_id, extra_headers) for the model, or None after printing why not."""
+    provider, model_id = split_model(full_model)
+    spec = PROVIDERS[provider]
+    url, missing = _expand_env(str(spec["chat_url"]))
+    if missing:
+        print(f"{Fore.RED}[!] {spec['label']}: environment variable not set: "
+              f"{', '.join(missing)}{Style.RESET_ALL}")
+        return None
+    headers: dict[str, str] = {}
+    if spec.get("key_env"):
+        key = get_api_key(provider)
+        if not key:
+            print(f"{Fore.RED}[!] {spec['label']}: API key not set "
+                  f"(environment variable {spec['key_env']}){Style.RESET_ALL}")
+            return None
+        headers["Authorization"] = f"Bearer {key}"
+    return url, model_id, headers
+
 SESSION_DIR = "sessions"
 IMAGE_DIR = "pollen_images"
 CODE_DIR = "pollen_codes"
@@ -961,8 +1047,15 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
 def send_chat(
     messages: list[dict[str, str]], stream: bool = True
 ) -> Optional[requests.Response]:
+    resolved = resolve_request(current_model)
+    if resolved is None:
+        return None
+    url, model_id, auth_headers = resolved
+    provider, _ = split_model(current_model)
+    spec = PROVIDERS[provider]
+
     payload: dict[str, object] = {
-        "model": current_model,
+        "model": model_id,
         "messages": messages,
         "stream": stream,
         "temperature": _temperature,
@@ -973,11 +1066,12 @@ def send_chat(
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "PollenChat/2.8.12",
+        **auth_headers,
     }
 
     try:
         response = requests.post(
-            API_BASE, headers=headers, json=payload, stream=stream,
+            url, headers=headers, json=payload, stream=stream,
             timeout=(10, 60) if stream else (10, 180),  # (connect, read)
         )
         response.raise_for_status()
@@ -988,7 +1082,13 @@ def send_chat(
         if code == 429:
             print(
                 f"{Fore.RED}[!] Rate limited (429). "
-                f"PollinationsAI free tier has limits. Wait a moment and retry.{Style.RESET_ALL}"
+                f"{spec['rate_hint']}{Style.RESET_ALL}"
+            )
+        elif code in (401, 403) and spec.get("key_env"):
+            detail = f" — {reason}" if reason else ""
+            print(
+                f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}. "
+                f"Check {spec['key_env']}.{Style.RESET_ALL}"
             )
         elif code is not None and code >= 500:
             print(f"{Fore.RED}[!] HTTP {code} from server: {reason or '(no details)'}{Style.RESET_ALL}")
