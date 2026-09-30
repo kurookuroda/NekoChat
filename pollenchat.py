@@ -128,6 +128,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import getpass
 import re
 import random
 import unicodedata
@@ -215,11 +216,65 @@ def split_model(full: str) -> tuple[str, str]:
         return head, rest
     return DEFAULT_PROVIDER, full
 
+# ============ API KEYS ============
+# Lookup order: [key] entered this session > environment variable > keys.json.
+# Keys never go into config.json, session files or exports.
+KEYS_FILE = "keys.json"
+_session_keys: dict[str, str] = {}
+
+def load_keys() -> dict[str, str]:
+    """Read keys.json ({service: key}). Missing or broken file -> {}."""
+    try:
+        with open(KEYS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v.strip() for k, v in data.items()
+            if isinstance(k, str) and isinstance(v, str) and v.strip()}
+
+def save_keys(keys: dict[str, str]) -> bool:
+    """Write keys.json readable by the owner only (chmod 600)."""
+    try:
+        fd = os.open(KEYS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(keys, f, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(KEYS_FILE, 0o600)  # also tighten a pre-existing file
+        except OSError:
+            pass
+        return True
+    except OSError as e:
+        print(f"{Fore.RED}[!] Could not save {KEYS_FILE}: {e}{Style.RESET_ALL}")
+        return False
+
 def get_api_key(provider: str) -> Optional[str]:
     env = PROVIDERS[provider].get("key_env")
     if not env:
         return None
-    return (os.environ.get(env) or "").strip() or None
+    if _session_keys.get(provider):
+        return _session_keys[provider]
+    val = (os.environ.get(env) or "").strip()
+    if val:
+        return val
+    return load_keys().get(provider) or None
+
+def key_source(provider: str) -> Optional[str]:
+    """Where the key currently in use comes from: 'session', 'env', 'keys.json' or None."""
+    env = PROVIDERS[provider].get("key_env")
+    if not env:
+        return None
+    if _session_keys.get(provider):
+        return "session"
+    if (os.environ.get(env) or "").strip():
+        return "env"
+    if load_keys().get(provider):
+        return "keys.json"
+    return None
+
+def _mask_key(key: str) -> str:
+    return "..." + key[-4:] if len(key) >= 12 else "****"
 
 def _expand_env(text: str) -> tuple[str, list[str]]:
     """Expand ${VAR} from the environment. Returns (text, names of missing variables)."""
@@ -246,7 +301,7 @@ def resolve_request(full_model: str) -> Optional[tuple[str, str, dict[str, str]]
         key = get_api_key(provider)
         if not key:
             print(f"{Fore.RED}[!] {spec['label']}: API key not set "
-                  f"(environment variable {spec['key_env']}){Style.RESET_ALL}")
+                  f"(use [key] or set {spec['key_env']}){Style.RESET_ALL}")
             return None
         headers["Authorization"] = f"Bearer {key}"
     return url, model_id, headers
@@ -641,6 +696,69 @@ def select_model() -> None:
 
     print(f"{Fore.GREEN}[OK] Model set to: {current_model}{Style.RESET_ALL}")
     save_config(build_config())
+
+# ============ API KEY COMMAND ============
+def set_key() -> None:
+    names = [n for n, sp in PROVIDERS.items() if sp.get("key_env")]
+    print(f"\n{Fore.YELLOW}Services that need an API key:{Style.RESET_ALL}")
+    for i, n in enumerate(names, 1):
+        src = key_source(n)
+        if src:
+            status = f"{Fore.GREEN}[set: {src} {_mask_key(get_api_key(n) or '')}]{Style.RESET_ALL}"
+        else:
+            status = f"{Fore.RED}[not set]{Style.RESET_ALL}"
+        print(f"  {i}. {n:<17} {PROVIDERS[n]['key_env']:<24} {status}")
+
+    choice = _ask(f"\n{Fore.CYAN}[+] Select service (number or name, Enter=cancel): {Style.RESET_ALL}")
+    if not choice:
+        return
+    if choice.isdigit() and 1 <= int(choice) <= len(names):
+        name = names[int(choice) - 1]
+    elif choice in names:
+        name = choice
+    else:
+        print(f"{Fore.RED}[!] Unknown service.{Style.RESET_ALL}")
+        return
+
+    env = PROVIDERS[name]["key_env"]
+    try:
+        value = getpass.getpass(
+            f"{env} (input hidden, Enter=cancel, 'delete'=remove saved key): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
+        return
+    if not value:
+        return
+
+    if value == "delete":
+        _session_keys.pop(name, None)
+        keys = load_keys()
+        if name in keys:
+            del keys[name]
+            if not save_keys(keys):
+                return
+        print(f"{Fore.GREEN}[OK] Removed the stored key for {name}.{Style.RESET_ALL}")
+        if (os.environ.get(env) or "").strip():
+            print(f"{Fore.YELLOW}[~] {env} is still set in the environment.{Style.RESET_ALL}")
+        return
+
+    if any(c.isspace() for c in value):
+        print(f"{Fore.RED}[!] A key must not contain spaces or line breaks.{Style.RESET_ALL}")
+        return
+
+    _session_keys[name] = value
+    print(f"{Fore.GREEN}[OK] Key for {name} set for this session ({_mask_key(value)}).{Style.RESET_ALL}")
+
+    if _ask(f"{Fore.CYAN}[+] Save to {KEYS_FILE}? (y/N): {Style.RESET_ALL}").lower() in ("y", "yes"):
+        keys = load_keys()
+        keys[name] = value
+        if save_keys(keys):
+            print(f"{Fore.GREEN}[OK] Saved to {KEYS_FILE} (owner-only permissions).{Style.RESET_ALL}")
+
+    if name == "cloudflare" and not (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip():
+        print(f"{Fore.YELLOW}[~] Cloudflare also needs the account ID: "
+              f"set CLOUDFLARE_ACCOUNT_ID.{Style.RESET_ALL}")
 
 # ============ SYSTEM PROMPT ============
 def set_system_prompt() -> None:
@@ -1983,6 +2101,7 @@ HELP_TEXT = r"""
 PollenChat Commands:
 
   [model]       — Select AI model
+  [key]         — Set or remove API keys for services that need one
   [system]      — Set or view the system prompt
   [name]        — Change your display name (past messages keep the name they were sent with)
   [config]      — Set temperature / max_tokens
@@ -2106,6 +2225,8 @@ def main() -> None:
                     print(HELP_TEXT)
                 elif cmd in ("[model]", "model"):
                     select_model()
+                elif cmd == "[key]":
+                    set_key()
                 elif cmd in ("[system]", "system"):
                     set_system_prompt()
                 elif cmd == "[name]":
