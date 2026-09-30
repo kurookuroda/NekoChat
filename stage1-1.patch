@@ -1,0 +1,48 @@
+diff --git a/pollenchat.py b/pollenchat.py
+index 791437d..686e0bb 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -168,13 +168,24 @@ PROVIDERS: dict[str, dict[str, Optional[str]]] = {
+         "models_url": MODELS_URL,
+         "key_env": None,
+         "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
++        "fail_hint": (
++            "The anonymous legacy endpoint may be down. Try another service, or set "
++            "POLLINATIONS_API_KEY and use a pollinations-key/ model."
++        ),
++    },
++    "pollinations-key": {
++        "label": "PollinationsAI (API key)",
++        "chat_url": "https://gen.pollinations.ai/v1/chat/completions",
++        "models_url": "https://gen.pollinations.ai/v1/models",
++        "key_env": "POLLINATIONS_API_KEY",
++        "rate_hint": "PollinationsAI rate limit or Pollen balance reached. Wait a moment and retry.",
+     },
+     "nvidia": {
+         "label": "NVIDIA",
+         "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+         "models_url": "https://integrate.api.nvidia.com/v1/models",
+         "key_env": "NVIDIA_API_KEY",
+-        "rate_hint": "NVIDIA free credits / rate limit reached. Wait a moment and retry.",
++        "rate_hint": "NVIDIA rate limit reached. Wait a moment and retry.",
+     },
+     "mistral": {
+         "label": "Mistral",
+@@ -208,7 +219,7 @@ def get_api_key(provider: str) -> Optional[str]:
+     env = PROVIDERS[provider].get("key_env")
+     if not env:
+         return None
+-    return os.environ.get(env) or None
++    return (os.environ.get(env) or "").strip() or None
+ 
+ def _expand_env(text: str) -> tuple[str, list[str]]:
+     """Expand ${VAR} from the environment. Returns (text, names of missing variables)."""
+@@ -1093,6 +1104,8 @@ def send_chat(
+         elif code is not None and code >= 500:
+             print(f"{Fore.RED}[!] HTTP {code} from server: {reason or '(no details)'}{Style.RESET_ALL}")
+             print(f"{Fore.YELLOW}    Server-side problem, not a PollenChat bug. Retry later.{Style.RESET_ALL}")
++            if spec.get("fail_hint"):
++                print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
+         else:
+             detail = f" — {reason}" if reason else ""
+             print(f"{Fore.RED}[!] HTTP Error: {e}{detail}{Style.RESET_ALL}")
