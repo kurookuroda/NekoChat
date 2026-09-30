@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PollenChat v2.8.1 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.13 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,8 +208,8 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>PollenChat v2.8.1</h1>
-  <p>詳細な使い方ガイド — PollinationsAI 向けクリーンな CLI チャットクライアント</p>
+  <h1>NekoChat v2.8.13</h1>
+  <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
 <main>
@@ -222,9 +222,6 @@ a:hover { text-decoration: underline; }
   </div>
   <p>初回起動時に名前を聞かれます。Enter で環境変数のデフォルト値が使われます。</p>
   <div class="terminal">
-<span class="info">[~] Fetching available models from PollinationsAI...</span>
-<span class="out">[OK] 7 models available.</span>
-
 <span class="prompt">[+]</span> <span class="out">Your name (Enter for 'user'): </span><span class="cmd">Taro</span>
 <span class="out">[OK] Welcome, Taro! Type [help] for commands.</span>
 
@@ -241,7 +238,7 @@ a:hover { text-decoration: underline; }
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">PythonでFizzBuzzを書いて</span>
 
-<span class="ai">PollenChat (openai):</span> <span class="out">もちろんです。以下にPythonコードを示します。</span>
+<span class="ai">NekoChat (openai):</span> <span class="out">もちろんです。以下にPythonコードを示します。</span>
 <span class="out">```python</span>
 <span class="out">for i in range(1, 101):</span>
 <span class="out">    if i % 15 == 0:</span>
@@ -253,25 +250,105 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">03</span> モデル切り替え</h2>
-  <p><code>[model]</code> で利用するAIモデルを変更できます。</p>
+  <h2><span class="num">03</span> サービスとモデルの切り替え</h2>
+  <p><code>[service]</code> でサービスを選ぶと、必要ならそのまま API キーを入力し、続けてモデルを選べます。<strong>モデルを選ぶまでサービスは切り替わりません</strong>（途中でキャンセルすると元のままです）。</p>
+  <div class="terminal">
+<span class="prompt">Taro[default] :</span> <span class="cmd">[service]</span>
+
+<span class="out">Services:</span>
+<span class="out">  [*] 1. pollinations      no key needed</span>
+<span class="out">  [ ] 2. pollinations-key  key not set</span>
+<span class="out">  [ ] 3. nvidia            key not set</span>
+<span class="out">  [ ] 4. mistral           key not set</span>
+<span class="out">  [ ] 5. cloudflare        key not set</span>
+
+<span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
+<span class="info">[~] Mistral needs an API key.</span>
+<span class="out">MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):</span>
+<span class="out">[OK] Key for mistral set for this session (...a1b2).</span>
+<span class="prompt">[+]</span> <span class="out">Save to keys.json? (y/N): </span><span class="cmd">y</span>
+<span class="out">[OK] Saved to keys.json (owner-only permissions).</span>
+
+<span class="out">Available models (Mistral):</span>
+<span class="out">  [ ] 1. codestral-latest</span>
+<span class="out">  [ ] 2. mistral-small-latest</span>
+<span class="out">  ...</span>
+<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter=cancel): </span><span class="cmd">2</span>
+<span class="out">[OK] Service: mistral  Model: mistral/mistral-small-latest</span>
+  </div>
+  <ul>
+    <li>モデル一覧は選んだ時点でそのサービスから取得します（10分間キャッシュ）。25件を超えると、先に絞り込み（部分一致）を聞かれます。</li>
+    <li>一覧が取れないサービス（Cloudflare など）では、モデル ID を直接入力します。</li>
+    <li>保存される形式は <code>サービス/モデルID</code> です。接頭辞のない名前（<code>openai</code> など）は PollinationsAI のモデルとして扱われます。</li>
+  </ul>
+  <p><code>[model]</code> は、<strong>今のサービスの中だけ</strong>でモデルを選び直します。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[model]</span>
 
-<span class="out">Available models:</span>
-<span class="out">  [ ] 1. openai</span>
-<span class="out">  [ ] 2. mistral</span>
-<span class="out">  [ ] 3. llama</span>
-<span class="out">  [*] 4. claude</span>
+<span class="out">Available models (Mistral):</span>
+<span class="out">  [*] 1. mistral-small-latest</span>
 <span class="out">  ...</span>
-
-<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter to keep claude): </span><span class="cmd">mistral</span>
-<span class="out">[OK] Model set to: mistral</span>
+<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter=cancel): </span><span class="cmd">1</span>
+<span class="out">[OK] Model set to: mistral/mistral-small-latest</span>
   </div>
 </section>
 
 <section>
-  <h2><span class="num">04</span> システムプロンプトの設定</h2>
+  <h2><span class="num">04</span> APIキーの管理</h2>
+  <p><code>[key]</code> でキーの設定・削除ができます（入力は画面に出ません）。</p>
+  <div class="terminal">
+<span class="prompt">Taro[default] :</span> <span class="cmd">[key]</span>
+
+<span class="out">Services that need an API key:</span>
+<span class="out">  1. pollinations-key  POLLINATIONS_API_KEY     [not set]</span>
+<span class="out">  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]</span>
+<span class="out">  3. mistral           MISTRAL_API_KEY          [not set]</span>
+<span class="out">  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]</span>
+  </div>
+  <p>キーは次の順で探されます。</p>
+  <ol>
+    <li><code>[key]</code> でこのセッション中に入力した値</li>
+    <li>環境変数（例: <code>export NVIDIA_API_KEY=...</code>。Termux なら <code>~/.bashrc</code> に書けます）</li>
+    <li><code>keys.json</code></li>
+  </ol>
+  <div class="note">
+    <code>keys.json</code> は所有者だけが読める権限で作られ、<code>.gitignore</code> に入っています。キーは <code>config.json</code>・セッション・エクスポートには書かれません。誤ってコミットした場合は、キー自体を無効にして作り直してください。
+  </div>
+  <table>
+    <tr><th>サービス</th><th>環境変数</th><th>補足</th></tr>
+    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402）</td></tr>
+    <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>enter.pollinations.ai</code> でキーを取得</td></tr>
+    <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
+    <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
+    <tr><td>cloudflare</td><td><code>CLOUDFLARE_API_TOKEN</code></td><td>アカウントID（<code>CLOUDFLARE_ACCOUNT_ID</code>）も必要。<code>[service]</code> が聞いて <code>config.json</code> に保存します</td></tr>
+  </table>
+  <p>無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。</p>
+
+  <h3>自分のサービスを追加する</h3>
+  <p><code>config.json</code> の <code>providers</code> に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。</p>
+  <div class="terminal">
+<span class="out">{</span>
+<span class="out">  "providers": {</span>
+<span class="out">    "groq": {</span>
+<span class="out">      "chat_url": "https://api.groq.com/openai/v1/chat/completions",</span>
+<span class="out">      "models_url": "https://api.groq.com/openai/v1/models",</span>
+<span class="out">      "key_env": "GROQ_API_KEY",</span>
+<span class="out">      "label": "Groq"</span>
+<span class="out">    },</span>
+<span class="out">    "ollama": {"chat_url": "http://localhost:11434/v1/chat/completions"}</span>
+<span class="out">  }</span>
+<span class="out">}</span>
+  </div>
+  <ul>
+    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code></li>
+    <li>URL の <code>${VAR}</code> は、環境変数、サービスの <code>vars</code> の順で埋められます。</li>
+    <li><code>https://</code> のみ（<code>localhost</code> に限り <code>http://</code> も可）。キーをここに書いても読まれません。</li>
+    <li>セッションは <code>サービス/モデルID</code> を覚えているので、別のマシンに移すときは <code>providers</code> も一緒に移してください。</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">05</span> システムプロンプトの設定</h2>
   <p><code>[system]</code> でAIの振る舞いを制御できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[system]</span>
@@ -290,7 +367,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">05</span> temperature / max_tokens の調整</h2>
+  <h2><span class="num">06</span> temperature / max_tokens の調整</h2>
   <p><code>[config]</code> で生成パラメータを変更できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[config]</span>
@@ -311,7 +388,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">06</span> ストリーミングモードの切り替え</h2>
+  <h2><span class="num">07</span> ストリーミングモードの切り替え</h2>
   <p><code>[stream]</code> で「1文字ずつ表示」と「完了後に一括表示」を切り替えます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[stream]</span>
@@ -321,7 +398,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">07</span> 画像生成</h2>
+  <h2><span class="num">08</span> 画像生成</h2>
   <p><code>[image]</code> で画像生成モードに入ります。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[image]</span>
@@ -351,7 +428,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">08</span> マルチライン入力</h2>
+  <h2><span class="num">09</span> マルチライン入力</h2>
   <p><code>[long]</code> で長文やコードを貼り付けて送信できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[long]</span>
@@ -367,7 +444,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">09</span> ファイルのインポート</h2>
+  <h2><span class="num">10</span> ファイルのインポート</h2>
   <p><code>[import]</code> で <code>.md</code> / <code>.txt</code> ファイルを読み込んで送信できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[import]</span>
@@ -383,7 +460,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">10</span> 会話履歴の検索</h2>
+  <h2><span class="num">11</span> 会話履歴の検索</h2>
   <p><code>[search]</code> で過去のメッセージをキーワード検索できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[search]</span>
@@ -397,7 +474,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">11</span> Markdown の再表示とコード保存</h2>
+  <h2><span class="num">12</span> Markdown の再表示とコード保存</h2>
   <p><code>[render]</code> で直前の応答をMarkdown整形して再表示。<code>[savecode]</code> でコードブロックを抽出保存します。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[render]</span>
@@ -418,7 +495,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">12</span> セッションのエクスポート</h2>
+  <h2><span class="num">13</span> セッションのエクスポート</h2>
   <p><code>[export]</code> で現在の会話をMarkdownファイルに出力します。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[export]</span>
@@ -429,7 +506,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">13</span> Undo とトークン概算</h2>
+  <h2><span class="num">14</span> Undo とトークン概算</h2>
   <p><code>[undo]</code> で直前のやり取りを削除。<code>[token]</code> で現在のコンテキストの概算トークン数を確認できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[undo]</span>
@@ -446,7 +523,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">14</span> 複数セッション管理</h2>
+  <h2><span class="num">15</span> 複数セッション管理</h2>
   <p>v2.8 の目玉機能です。複数の会話を並行して管理できます。</p>
 
   <h3>セッション一覧と切り替え</h3>
@@ -493,7 +570,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">15</span> 便利なワークフロー例</h2>
+  <h2><span class="num">16</span> 便利なワークフロー例</h2>
 
   <h3>ワークフロー1: 仕事と趣味を分ける</h3>
   <div class="terminal">
@@ -531,10 +608,12 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">16</span> コマンド早見表</h2>
+  <h2><span class="num">17</span> コマンド早見表</h2>
   <table>
     <tr><th>コマンド</th><th>用途</th></tr>
-    <tr><td><code>[model]</code></td><td>AIモデルを切り替え</td></tr>
+    <tr><td><code>[service]</code></td><td>サービスを切り替え（キー入力→モデル選択まで）</td></tr>
+    <tr><td><code>[model]</code></td><td>今のサービスのモデルを切り替え</td></tr>
+    <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
     <tr><td><code>[system]</code></td><td>システムプロンプトを設定</td></tr>
     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>
@@ -560,13 +639,19 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">17</span> トラブルシューティング</h2>
+  <h2><span class="num">18</span> トラブルシューティング</h2>
 
   <h3>HTTP 429 (Rate Limited)</h3>
-  <p>PollinationsAI の無料 tier にはレート制限があります。数秒〜数十秒待ってから再試行してください。</p>
+  <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
+
+  <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
+  <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
+
+  <h3>認証エラー（HTTP 401 / 403）</h3>
+  <p>キーが違う、または期限切れです。<code>[key]</code> で入れ直してください（環境変数が優先されていないかも確認を。<code>[key]</code> の一覧に取得元が出ます）。</p>
 
   <h3>モデルが応答しない</h3>
-  <p><code>[model]</code> で別のモデルに切り替えてみてください。PollinationsAI のモデル可用性は変動します。</p>
+  <p><code>[model]</code> で別のモデルに切り替えるか、<code>[service]</code> で別のサービスを試してください。モデルの可用性はサービスごとに変動します。</p>
 
   <h3>セッションが復元されない</h3>
   <p><code>sessions/</code> ディレクトリ内の <code>.json</code> ファイルを確認してください。手動でファイルを移動した場合は、起動時に自動読込されます。</p>

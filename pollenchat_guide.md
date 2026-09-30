@@ -1,6 +1,6 @@
-# PollenChat 使い方ガイド
+# NekoChat 使い方ガイド（v2.8.13）
 
-PollenChat は [PollinationsAI](https://pollinations.ai/) 向けのクリーンな CLI チャットクライアントです。
+NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
 
 ## 起動
 
@@ -11,9 +11,6 @@ python pollenchat.py
 初回起動時に名前を聞かれます。Enter で環境変数のデフォルト値が使われます。
 
 ```
-[~] Fetching available models from PollinationsAI...
-[OK] 7 models available.
-
 [+] Your name (Enter for 'user'): Taro
 [OK] Welcome, Taro! Type [help] for commands.
 
@@ -31,7 +28,7 @@ Taro[default] :
 ```
 Taro[default] : PythonでFizzBuzzを書いて
 
-PollenChat (openai): もちろんです。以下にPythonコードを示します。
+NekoChat (openai): もちろんです。以下にPythonコードを示します。
 ```python
 for i in range(1, 101):
     if i % 15 == 0:
@@ -44,21 +41,107 @@ for i in range(1, 101):
 
 ---
 
-## モデル切り替え
+## サービスとモデルの切り替え
+
+`[service]` でサービスを選ぶと、必要ならそのまま API キーを入力し、続けてモデルを選べます。**モデルを選ぶまでサービスは切り替わりません**（途中でキャンセルすると元のままです）。
+
+```
+Taro[default] : [service]
+
+Services:
+  [*] 1. pollinations      no key needed
+  [ ] 2. pollinations-key  key not set
+  [ ] 3. nvidia            key not set
+  [ ] 4. mistral           key not set
+  [ ] 5. cloudflare        key not set
+
+[+] Select service (number or name, Enter=cancel): 4
+[~] Mistral needs an API key.
+MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):
+[OK] Key for mistral set for this session (...a1b2).
+[+] Save to keys.json? (y/N): y
+[OK] Saved to keys.json (owner-only permissions).
+
+Available models (Mistral):
+  [ ] 1. codestral-latest
+  [ ] 2. mistral-small-latest
+  ...
+[+] Select model (number or name, Enter=cancel): 2
+[OK] Service: mistral  Model: mistral/mistral-small-latest
+```
+
+- モデル一覧は選んだ時点でそのサービスから取得します（10分間キャッシュ）。25件を超えると、先に絞り込み（部分一致）を聞かれます。
+- 一覧が取れないサービス（Cloudflare など）では、モデル ID を直接入力します。
+- 保存される形式は `サービス/モデルID` です。接頭辞のない名前（`openai` など）は PollinationsAI のモデルとして扱われます。
+
+`[model]` は、**今のサービスの中だけ**でモデルを選び直します。
 
 ```
 Taro[default] : [model]
 
-Available models:
-  [ ] 1. openai
-  [ ] 2. mistral
-  [ ] 3. llama
-  [*] 4. claude
+Available models (Mistral):
+  [*] 1. mistral-small-latest
   ...
-
-[+] Select model (number or name, Enter to keep claude): mistral
-[OK] Model set to: mistral
+[+] Select model (number or name, Enter=cancel): 1
+[OK] Model set to: mistral/mistral-small-latest
 ```
+
+---
+
+## APIキーの管理
+
+`[key]` でキーの設定・削除ができます（入力は画面に出ません）。
+
+```
+Taro[default] : [key]
+
+Services that need an API key:
+  1. pollinations-key  POLLINATIONS_API_KEY     [not set]
+  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]
+  3. mistral           MISTRAL_API_KEY          [not set]
+  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]
+```
+
+キーは次の順で探されます。
+
+1. `[key]` でこのセッション中に入力した値
+2. 環境変数（例: `export NVIDIA_API_KEY=...`。Termux なら `~/.bashrc` に書けます）
+3. `keys.json`
+
+`keys.json` は所有者だけが読める権限で作られ、`.gitignore` に入っています。キーは `config.json`・セッション・エクスポートには書かれません。誤ってコミットした場合は、キー自体を無効にして作り直してください。
+
+| サービス | 環境変数 | 補足 |
+|----------|----------|------|
+| pollinations | なし | 匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402） |
+| pollinations-key | `POLLINATIONS_API_KEY` | `enter.pollinations.ai` でキーを取得 |
+| nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
+| mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
+| cloudflare | `CLOUDFLARE_API_TOKEN` | アカウントID（`CLOUDFLARE_ACCOUNT_ID`）も必要。`[service]` が聞いて `config.json` に保存します |
+
+無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。
+
+### 自分のサービスを追加する
+
+`config.json` の `providers` に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。
+
+```json
+{
+  "providers": {
+    "groq": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "models_url": "https://api.groq.com/openai/v1/models",
+      "key_env": "GROQ_API_KEY",
+      "label": "Groq"
+    },
+    "ollama": {"chat_url": "http://localhost:11434/v1/chat/completions"}
+  }
+}
+```
+
+- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars`
+- URL の `${VAR}` は、環境変数、サービスの `vars` の順で埋められます。
+- `https://` のみ（`localhost` に限り `http://` も可）。キーをここに書いても読まれません。
+- セッションは `サービス/モデルID` を覚えているので、別のマシンに移すときは `providers` も一緒に移してください。
 
 ---
 
@@ -326,7 +409,9 @@ Bye bye, Taro!
 
 | コマンド | 用途 |
 |---------|------|
-| `[model]` | AIモデルを切り替え |
+| `[service]` | サービスを切り替え（キー入力→モデル選択まで） |
+| `[model]` | 今のサービスのモデルを切り替え |
+| `[key]` | APIキーの設定・削除 |
 | `[system]` | システムプロンプトを設定 |
 | `[config]` | temperature / max_tokens を調整 |
 | `[stream]` | ストリーミング ON/OFF 切り替え |
@@ -355,11 +440,19 @@ Bye bye, Taro!
 
 ### HTTP 429 (Rate Limited)
 
-PollinationsAI の無料 tier にはレート制限があります。数秒〜数十秒待ってから再試行してください。
+どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。
+
+### HTTP 500 / 402（PollinationsAI の匿名端点）
+
+旧端点が停止している、または無料でなくなっている可能性があります。`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
+
+### 認証エラー（HTTP 401 / 403）
+
+キーが違う、または期限切れです。`[key]` で入れ直してください（環境変数が優先されていないかも確認を。`[key]` の一覧に取得元が出ます）。
 
 ### モデルが応答しない
 
-`[model]` で別のモデルに切り替えてみてください。PollinationsAI のモデル可用性は変動します。
+`[model]` で別のモデルに切り替えるか、`[service]` で別のサービスを試してください。モデルの可用性はサービスごとに変動します。
 
 ### セッショが復元されない
 

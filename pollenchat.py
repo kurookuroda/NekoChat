@@ -1,7 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PollenChat v2.8.12 — Clean CLI chat client for PollinationsAI
+NekoChat v2.8.13 — Clean CLI chat client for several LLM services
+(the file is still named pollenchat.py)
+
+Changes in v2.8.13:
+  - Works with more than PollinationsAI. Built in: PollinationsAI (anonymous
+    legacy endpoint), PollinationsAI with an API key, NVIDIA, Mistral and
+    Cloudflare Workers AI - all OpenAI-compatible. The stored model string is
+    "service/model-id"; a bare name (e.g. "openai") still means PollinationsAI,
+    so old config.json and session files keep working.
+  - New [service]: pick a service, enter its API key if needed, then pick a
+    model. The service only changes once a model has been chosen.
+    [model] now chooses within the current service. Model lists are fetched
+    from the service on demand (cached for 10 minutes; filter when long; type
+    a model ID by hand when a service has no list). Nothing is fetched at start.
+  - New [key]: set or remove API keys (hidden input). Lookup order: key entered
+    this session > environment variable > keys.json. keys.json is written with
+    owner-only permissions and listed in .gitignore. Keys are never written to
+    config.json, session files or exports.
+  - Optional "providers" block in config.json: override a built-in service or
+    add your own OpenAI-compatible one (chat_url, models_url, key_env, label,
+    vars ...). ${VAR} in URLs is expanded from the environment, then from
+    "vars" (Cloudflare's account ID is asked for by [service] and kept there).
+    https only (plain http only for localhost). No keys in this block.
+  - Errors name the service. 401/403 point at the key, 429 shows the service's
+    own hint, and 402/5xx on the anonymous PollinationsAI endpoint suggest
+    switching service.
+  - Banner, prompt, exports and User-Agent now say NekoChat.
 
 Fixes in v2.8.12:
   - New [name] command to change your display name (it used to be asked only
@@ -424,13 +450,13 @@ LANG_EXT = {
 
 # ============ BANNER ============
 BANNER = r"""
-    ____       __           ________          __
-   / __ \_____/ /_____     / ____/ /_  ____ _/ /_
-  / /_/ / ___/ //_/ _ \   / /   / __ \/ __ `/ __/
- / ____/ /__/ ,< /  __/  / /___/ / / / /_/ / /_
-/_/    \___/_/|_|\___/   \____/_/ /_/\__,_/\__/
-                                         v2.8.12
-         Clean & Harmless — Powered by PollinationsAI
+    _   __     __            ________          __
+   / | / /__  / /______     / ____/ /_  ____ _/ /_
+  /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
+ / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
+/_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
+                                          v2.8.13
+        Clean & Harmless — Multi-service LLM chat
 """
 
 # ============ STATE ============
@@ -767,7 +793,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "PollenChat/2.8.12"}
+    headers = {"User-Agent": "NekoChat/2.8.13"}
     if spec.get("key_env"):
         key = get_api_key(provider)
         if not key:
@@ -1429,7 +1455,7 @@ def send_chat(
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "PollenChat/2.8.12",
+        "User-Agent": "NekoChat/2.8.13",
         **auth_headers,
     }
 
@@ -1456,7 +1482,7 @@ def send_chat(
             )
         elif code is not None and code >= 500:
             print(f"{Fore.RED}[!] HTTP {code} from server: {reason or '(no details)'}{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}    Server-side problem, not a PollenChat bug. Retry later.{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}    Server-side problem, not a NekoChat bug. Retry later.{Style.RESET_ALL}")
             if spec.get("fail_hint"):
                 print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
         else:
@@ -1618,7 +1644,7 @@ def chat_once(user_input: str) -> bool:
         {"role": "user", "content": user_input, "name": username}
     )
 
-    print(f"\n{Fore.YELLOW}PollenChat ({current_model}):{Style.RESET_ALL} ", end="", flush=True)
+    print(f"\n{Fore.YELLOW}NekoChat ({current_model}):{Style.RESET_ALL} ", end="", flush=True)
 
     if _stream_mode:
         assistant_text, completed = stream_response(response)
@@ -1743,7 +1769,7 @@ def export_session() -> None:
         include_system = sp_choice == "y"
 
     lines = []
-    lines.append("# PollenChat Session Export\n")
+    lines.append("# NekoChat Session Export\n")
     lines.append(f"- **Model:** {current_model}\n")
     lines.append(f"- **Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     if include_system:
@@ -1754,7 +1780,7 @@ def export_session() -> None:
         role = f"User ({_msg_name(msg)})" if msg["role"] == "user" else "Assistant"
         lines.append(f"\n## {role}\n\n{msg['content']}\n")
 
-    lines.append("\n---\n\n*Exported by PollenChat*\n")
+    lines.append("\n---\n\n*Exported by NekoChat*\n")
 
     path = os.path.join(EXPORT_DIR, fname)
     try:
@@ -1899,7 +1925,7 @@ def _build_exchange_md(
         order = f"{len(picked)} exchanges, {how}"
 
     lines = [
-        "# PollenChat Export\n",
+        "# NekoChat Export\n",
         f"- **Session:** {_current_session}\n",
         f"- **Selection:** {sel_text} ({order})\n",
         f"- **Model:** {current_model} (at export)\n",
@@ -1915,7 +1941,7 @@ def _build_exchange_md(
             lines.append(f"\n### {label}\n\n{_quote(q)}\n")
         lines.append(f"\n### Assistant\n\n{answer.rstrip()}\n")
         lines.append("\n---\n")
-    lines.append("\n*Exported by PollenChat*\n")
+    lines.append("\n*Exported by NekoChat*\n")
     return "".join(lines)
 
 
@@ -2335,7 +2361,7 @@ def clear_history() -> None:
 
 # ============ HELP ============
 HELP_TEXT = r"""
-PollenChat Commands:
+NekoChat Commands:
 
   [service]     — Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare ...) and pick its model
   [model]       — Select a model of the current service
@@ -2373,7 +2399,10 @@ PollenChat Commands:
   [clear]       — Clear current session history
   [history]     — Show current session history
   [help]        — Show this help
-  [exit]        — Quit PollenChat
+  [exit]        — Quit NekoChat
+
+Services and keys: API keys live in keys.json ([key]); custom services go in the
+"providers" block of config.json (see README).
 
 Just type normally to chat with the AI!
 """

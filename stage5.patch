@@ -1,0 +1,862 @@
+diff --git a/README.md b/README.md
+index 2fd2bd2..39dcf00 100644
+--- a/README.md
++++ b/README.md
+@@ -1,12 +1,13 @@
+-# PollenChat v2.8.5
++# NekoChat v2.8.13
+ 
+-A clean, harmless CLI chat client for [PollinationsAI](https://pollinations.ai/).
++A clean, harmless CLI chat client for several LLM services.
+ 
+-PollenChat is a lightweight terminal-based chat application that lets you talk to various AI models (OpenAI, Mistral, Llama, Claude, Gemini, etc.) through the PollinationsAI free API. It also supports image generation, multi-session management, code extraction, and more.
++NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat application. It talks to OpenAI-compatible services — [PollinationsAI](https://pollinations.ai/), NVIDIA, Mistral and Cloudflare Workers AI are built in, and you can add your own in `config.json`. It also supports image generation (PollinationsAI), multi-session management, code extraction, and more. It runs on plain CPython, including Termux.
+ 
+ ## Features
+ 
+-- **Multi-model chat** — Switch between models via `[model]`
++- **Multiple services** — Switch service with `[service]` and model with `[model]`; add your own OpenAI-compatible service in `config.json`
++- **API keys kept out of the way** — Set keys with `[key]`; they are stored only in `keys.json` (owner-only, git-ignored), never in configs, sessions or exports
+ - **Streaming & batch modes** — Toggle live token-by-token output or wait-for-complete display
+ - **System prompt editing** — Customize the assistant's behavior with `[system]`
+ - **Temperature / max_tokens control** — Fine-tune generation parameters with `[config]`
+@@ -26,8 +27,8 @@ PollenChat is a lightweight terminal-based chat application that lets you talk t
+ 
+ ```bash
+ # Clone or download pollenchat.py
+-git clone https://github.com/kurookuroda/PollenChat.git
+-cd PollenChat
++git clone https://github.com/kurookuroda/NekoChat.git
++cd NekoChat
+ 
+ # Install dependencies
+ pip install -r requirements.txt
+@@ -41,40 +42,99 @@ python pollenchat.py
+ 
+ On first launch you will be asked for your name. After that, just type normally to chat. Use `[help]` to see all available commands.
+ 
++## Services and API Keys
++
++Type `[service]` to see the services, pick one, enter its API key if it needs one, and choose a model. The service only changes once a model has been chosen.
++
++| Service | Key | Notes |
++|---------|-----|-------|
++| `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It may be down or no longer free (HTTP 500 / 402) — switch service if so |
++| `pollinations-key` | `POLLINATIONS_API_KEY` | `gen.pollinations.ai`; get a key at enter.pollinations.ai |
++| `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
++| `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
++| `cloudflare` | `CLOUDFLARE_API_TOKEN` | Also needs your account ID (`CLOUDFLARE_ACCOUNT_ID`); `[service]` asks for it and keeps it in `config.json`. No model list — type a model ID such as `@cf/...` |
++
++Free-tier limits differ per service and change over time; check each service's own documentation.
++
++### Where the key comes from
++
++NekoChat looks for a service's key in this order:
++
++1. The key you entered with `[key]` in this session
++2. The environment variable above (e.g. `export NVIDIA_API_KEY=...`, which also works from `~/.bashrc` in Termux)
++3. `keys.json`
++
++`[key]` shows which source is in use (only the last 4 characters of a key are displayed), reads the key with hidden input, and asks whether to save it to `keys.json`. Enter `delete` at the key prompt to remove a stored key. `keys.json` is created with owner-only permissions and is listed in `.gitignore`. If you ever committed a real key, revoke it — Git history keeps it.
++
++### Model names
++
++Models are stored as `service/model-id` (e.g. `nvidia/meta/llama-3.1-70b-instruct`). A name without a service prefix, such as `openai`, means PollinationsAI, so older `config.json` and session files keep working. Model lists are fetched from the service when you open `[service]` / `[model]` (cached for 10 minutes); long lists can be filtered by substring, and if a service has no list you type the model ID.
++
++### Adding or overriding services (`config.json`)
++
++An optional `providers` block defines your own OpenAI-compatible services or overrides built-in ones:
++
++```json
++{
++  "providers": {
++    "groq": {
++      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
++      "models_url": "https://api.groq.com/openai/v1/models",
++      "key_env": "GROQ_API_KEY",
++      "label": "Groq"
++    },
++    "ollama": {
++      "chat_url": "http://localhost:11434/v1/chat/completions"
++    },
++    "cloudflare": {
++      "vars": {"CLOUDFLARE_ACCOUNT_ID": "your-account-id"}
++    }
++  }
++}
++```
++
++- Fields: `chat_url`, `models_url` (`null` = no list), `key_env` (`null` = no key), `label`, `rate_hint`, `fail_hint`, `vars`.
++- `${VAR}` in a URL is filled from the environment first, then from the service's `vars`.
++- Only `https://` URLs are accepted (plain `http://` only for `localhost`). Service names use `a-z`, `0-9` and `-`.
++- Keys are **not** read from this block — use `[key]`, `keys.json` or environment variables. Invalid entries are skipped with a warning at startup.
++- Sessions remember the model as `service/model-id`; if you move sessions to another machine, bring the `providers` block along too.
++
+ ## Commands
+ 
+ ### Chat & Settings
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[model]` | Select AI model |
+- `[system]` | Set or view the system prompt (multi-line, type `[end]` to finish, `[reset]` for default) |
+- `[config]` | Set `temperature` / `max_tokens` |
+- `[stream]` | Toggle streaming / batch display mode |
++| `[service]` | Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare, your own) and pick its model |
++| `[model]` | Select a model of the current service |
++| `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
++| `[system]` | Set or view the system prompt (multi-line, type `[end]` to finish, `[reset]` for default) |
++| `[config]` | Set `temperature` / `max_tokens` |
++| `[stream]` | Toggle streaming / batch display mode |
+ 
+ ### Input
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[long]` | Enter multiline input mode |
+- `[import]` | Import a `.md` / `.txt` file and send as user message |
++| `[long]` | Enter multiline input mode |
++| `[import]` | Import a `.md` / `.txt` file and send as user message |
+ 
+ ### Output & History
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[search]` | Search conversation history |
+- `[render]` | Re-display last response with Markdown formatting |
+- `[savecode]` | Extract and save code blocks from last response |
+- `[export]` | Export conversation to Markdown file |
+- `[undo]` | Remove the last user-assistant exchange |
+- `[token]` | Show rough token estimate for current context |
++| `[search]` | Search conversation history |
++| `[render]` | Re-display last response with Markdown formatting |
++| `[savecode]` | Extract and save code blocks from last response |
++| `[export]` | Export conversation to Markdown file |
++| `[undo]` | Remove the last user-assistant exchange |
++| `[token]` | Show rough token estimate for current context |
+ 
+ ### Image Generation
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[image]` | Enter image generation mode |
++| `[image]` | Enter image generation mode |
+ 
+ Inside image mode:
+ - Type a prompt to generate an image
+@@ -86,41 +146,42 @@ Inside image mode:
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[sessions]` | List all sessions |
+- `[switch]` | Switch to another session |
+- `[new]` | Create a new empty session |
+- `[rename]` | Rename the current session |
+- `[delete]` | Delete a session (cannot delete current) |
+- `[save]` | Save current session manually (legacy) |
+- `[load]` | Load a session from file manually (legacy) |
+- `[clear]` | Clear current session history |
+- `[history]` | Show current session history |
++| `[sessions]` | List all sessions |
++| `[switch]` | Switch to another session |
++| `[new]` | Create a new empty session |
++| `[rename]` | Rename the current session |
++| `[delete]` | Delete a session (cannot delete current) |
++| `[save]` | Save current session manually (legacy) |
++| `[load]` | Load a session from file manually (legacy) |
++| `[clear]` | Clear current session history |
++| `[history]` | Show current session history |
+ 
+ ### Other
+ 
+ | Command | Description |
+ |---------|-------------|
+- `[help]` | Show help |
+- `[exit]` | Quit PollenChat (auto-saves all sessions) |
++| `[help]` | Show help |
++| `[exit]` | Quit NekoChat (auto-saves all sessions) |
+ 
+ ## Directories
+ 
+-PollenChat creates the following directories in its working folder:
++NekoChat creates the following files and directories in its working folder:
+ 
+ - `sessions/` — Saved session JSON files
+ - `pollen_images/` — Generated images
+ - `pollen_codes/` — Extracted code blocks
+ - `pollen_exports/` — Exported Markdown conversations
+-- `config.json` — User preferences (model, system prompt, username, etc.)
++- `config.json` — User preferences (model, system prompt, username, optional `providers`, etc.)
++- `keys.json` — API keys saved with `[key]` (owner-only; never commit it)
+ 
+ ## Session Management Details
+ 
+-PollenChat supports multiple parallel conversation sessions. Each session is an independent conversation history.
++NekoChat supports multiple parallel conversation sessions. Each session is an independent conversation history.
+ 
+ - **Auto-load**: On startup, all `.json` files in `sessions/` are automatically loaded as sessions.
+ - **Auto-save**: On exit (`[exit]` or Ctrl+D), all sessions are automatically saved back to `sessions/`.
+ - **Current session indicator**: The prompt shows the active session name: `User[work] :`
+-- **Session-agnostic config**: `model`, `system_prompt`, `temperature`, and `max_tokens` are global settings shared across all sessions.
++- **Session-agnostic config**: `model` (including its service), `system_prompt`, `temperature`, and `max_tokens` are global settings shared across all sessions.
+ 
+ ## Image Generation
+ 
+@@ -146,7 +207,8 @@ This is only an approximation. Actual token counts depend on the model's tokeniz
+ 
+ ## Notes
+ 
+-- PollinationsAI has rate limits on its free tier. If you see HTTP 429, wait a moment and retry.
++- Every service has rate limits. If you see HTTP 429, wait a moment and retry; the message names the service.
++- Image generation (`[image]`) always uses PollinationsAI's image endpoint, whichever chat service is selected, and may be affected by the same availability issues.
+ - The `max_tokens` parameter is optional; if unset, the server default is used.
+ - Image generation parameters (width, height, seed) are session-only and not persisted to `config.json`.
+ - Session files store model, username, system prompt, temperature, max_tokens, and conversation history.
+diff --git a/pollenchat.py b/pollenchat.py
+index 670325c..2c176ed 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -1,7 +1,33 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+ """
+-PollenChat v2.8.12 — Clean CLI chat client for PollinationsAI
++NekoChat v2.8.13 — Clean CLI chat client for several LLM services
++(the file is still named pollenchat.py)
++
++Changes in v2.8.13:
++  - Works with more than PollinationsAI. Built in: PollinationsAI (anonymous
++    legacy endpoint), PollinationsAI with an API key, NVIDIA, Mistral and
++    Cloudflare Workers AI - all OpenAI-compatible. The stored model string is
++    "service/model-id"; a bare name (e.g. "openai") still means PollinationsAI,
++    so old config.json and session files keep working.
++  - New [service]: pick a service, enter its API key if needed, then pick a
++    model. The service only changes once a model has been chosen.
++    [model] now chooses within the current service. Model lists are fetched
++    from the service on demand (cached for 10 minutes; filter when long; type
++    a model ID by hand when a service has no list). Nothing is fetched at start.
++  - New [key]: set or remove API keys (hidden input). Lookup order: key entered
++    this session > environment variable > keys.json. keys.json is written with
++    owner-only permissions and listed in .gitignore. Keys are never written to
++    config.json, session files or exports.
++  - Optional "providers" block in config.json: override a built-in service or
++    add your own OpenAI-compatible one (chat_url, models_url, key_env, label,
++    vars ...). ${VAR} in URLs is expanded from the environment, then from
++    "vars" (Cloudflare's account ID is asked for by [service] and kept there).
++    https only (plain http only for localhost). No keys in this block.
++  - Errors name the service. 401/403 point at the key, 429 shows the service's
++    own hint, and 402/5xx on the anonymous PollinationsAI endpoint suggest
++    switching service.
++  - Banner, prompt, exports and User-Agent now say NekoChat.
+ 
+ Fixes in v2.8.12:
+   - New [name] command to change your display name (it used to be asked only
+@@ -424,13 +450,13 @@ LANG_EXT = {
+ 
+ # ============ BANNER ============
+ BANNER = r"""
+-    ____       __           ________          __
+-   / __ \_____/ /_____     / ____/ /_  ____ _/ /_
+-  / /_/ / ___/ //_/ _ \   / /   / __ \/ __ `/ __/
+- / ____/ /__/ ,< /  __/  / /___/ / / / /_/ / /_
+-/_/    \___/_/|_|\___/   \____/_/ /_/\__,_/\__/
+-                                         v2.8.12
+-         Clean & Harmless — Powered by PollinationsAI
++    _   __     __            ________          __
++   / | / /__  / /______     / ____/ /_  ____ _/ /_
++  /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
++ / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
++/_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
++                                          v2.8.13
++        Clean & Harmless — Multi-service LLM chat
+ """
+ 
+ # ============ STATE ============
+@@ -767,7 +793,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+     cached = _models_cache.get(provider)
+     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+         return cached[1]
+-    headers = {"User-Agent": "PollenChat/2.8.12"}
++    headers = {"User-Agent": "NekoChat/2.8.13"}
+     if spec.get("key_env"):
+         key = get_api_key(provider)
+         if not key:
+@@ -1429,7 +1455,7 @@ def send_chat(
+ 
+     headers = {
+         "Content-Type": "application/json",
+-        "User-Agent": "PollenChat/2.8.12",
++        "User-Agent": "NekoChat/2.8.13",
+         **auth_headers,
+     }
+ 
+@@ -1456,7 +1482,7 @@ def send_chat(
+             )
+         elif code is not None and code >= 500:
+             print(f"{Fore.RED}[!] HTTP {code} from server: {reason or '(no details)'}{Style.RESET_ALL}")
+-            print(f"{Fore.YELLOW}    Server-side problem, not a PollenChat bug. Retry later.{Style.RESET_ALL}")
++            print(f"{Fore.YELLOW}    Server-side problem, not a NekoChat bug. Retry later.{Style.RESET_ALL}")
+             if spec.get("fail_hint"):
+                 print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
+         else:
+@@ -1618,7 +1644,7 @@ def chat_once(user_input: str) -> bool:
+         {"role": "user", "content": user_input, "name": username}
+     )
+ 
+-    print(f"\n{Fore.YELLOW}PollenChat ({current_model}):{Style.RESET_ALL} ", end="", flush=True)
++    print(f"\n{Fore.YELLOW}NekoChat ({current_model}):{Style.RESET_ALL} ", end="", flush=True)
+ 
+     if _stream_mode:
+         assistant_text, completed = stream_response(response)
+@@ -1743,7 +1769,7 @@ def export_session() -> None:
+         include_system = sp_choice == "y"
+ 
+     lines = []
+-    lines.append("# PollenChat Session Export\n")
++    lines.append("# NekoChat Session Export\n")
+     lines.append(f"- **Model:** {current_model}\n")
+     lines.append(f"- **Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+     if include_system:
+@@ -1754,7 +1780,7 @@ def export_session() -> None:
+         role = f"User ({_msg_name(msg)})" if msg["role"] == "user" else "Assistant"
+         lines.append(f"\n## {role}\n\n{msg['content']}\n")
+ 
+-    lines.append("\n---\n\n*Exported by PollenChat*\n")
++    lines.append("\n---\n\n*Exported by NekoChat*\n")
+ 
+     path = os.path.join(EXPORT_DIR, fname)
+     try:
+@@ -1899,7 +1925,7 @@ def _build_exchange_md(
+         order = f"{len(picked)} exchanges, {how}"
+ 
+     lines = [
+-        "# PollenChat Export\n",
++        "# NekoChat Export\n",
+         f"- **Session:** {_current_session}\n",
+         f"- **Selection:** {sel_text} ({order})\n",
+         f"- **Model:** {current_model} (at export)\n",
+@@ -1915,7 +1941,7 @@ def _build_exchange_md(
+             lines.append(f"\n### {label}\n\n{_quote(q)}\n")
+         lines.append(f"\n### Assistant\n\n{answer.rstrip()}\n")
+         lines.append("\n---\n")
+-    lines.append("\n*Exported by PollenChat*\n")
++    lines.append("\n*Exported by NekoChat*\n")
+     return "".join(lines)
+ 
+ 
+@@ -2335,7 +2361,7 @@ def clear_history() -> None:
+ 
+ # ============ HELP ============
+ HELP_TEXT = r"""
+-PollenChat Commands:
++NekoChat Commands:
+ 
+   [service]     — Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare ...) and pick its model
+   [model]       — Select a model of the current service
+@@ -2373,7 +2399,10 @@ PollenChat Commands:
+   [clear]       — Clear current session history
+   [history]     — Show current session history
+   [help]        — Show this help
+-  [exit]        — Quit PollenChat
++  [exit]        — Quit NekoChat
++
++Services and keys: API keys live in keys.json ([key]); custom services go in the
++"providers" block of config.json (see README).
+ 
+ Just type normally to chat with the AI!
+ """
+diff --git a/pollenchat_guide.html b/pollenchat_guide.html
+index 3ec904b..0729d28 100644
+--- a/pollenchat_guide.html
++++ b/pollenchat_guide.html
+@@ -3,7 +3,7 @@
+ <head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-<title>PollenChat v2.8.1 詳細な使い方ガイド</title>
++<title>NekoChat v2.8.13 詳細な使い方ガイド</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+ <style>
+@@ -208,8 +208,8 @@ a:hover { text-decoration: underline; }
+ <body>
+ 
+ <header>
+-  <h1>PollenChat v2.8.1</h1>
+-  <p>詳細な使い方ガイド — PollinationsAI 向けクリーンな CLI チャットクライアント</p>
++  <h1>NekoChat v2.8.13</h1>
++  <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
+ </header>
+ 
+ <main>
+@@ -222,9 +222,6 @@ a:hover { text-decoration: underline; }
+   </div>
+   <p>初回起動時に名前を聞かれます。Enter で環境変数のデフォルト値が使われます。</p>
+   <div class="terminal">
+-<span class="info">[~] Fetching available models from PollinationsAI...</span>
+-<span class="out">[OK] 7 models available.</span>
+-
+ <span class="prompt">[+]</span> <span class="out">Your name (Enter for 'user'): </span><span class="cmd">Taro</span>
+ <span class="out">[OK] Welcome, Taro! Type [help] for commands.</span>
+ 
+@@ -241,7 +238,7 @@ a:hover { text-decoration: underline; }
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">PythonでFizzBuzzを書いて</span>
+ 
+-<span class="ai">PollenChat (openai):</span> <span class="out">もちろんです。以下にPythonコードを示します。</span>
++<span class="ai">NekoChat (openai):</span> <span class="out">もちろんです。以下にPythonコードを示します。</span>
+ <span class="out">```python</span>
+ <span class="out">for i in range(1, 101):</span>
+ <span class="out">    if i % 15 == 0:</span>
+@@ -253,25 +250,105 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">03</span> モデル切り替え</h2>
+-  <p><code>[model]</code> で利用するAIモデルを変更できます。</p>
++  <h2><span class="num">03</span> サービスとモデルの切り替え</h2>
++  <p><code>[service]</code> でサービスを選ぶと、必要ならそのまま API キーを入力し、続けてモデルを選べます。<strong>モデルを選ぶまでサービスは切り替わりません</strong>（途中でキャンセルすると元のままです）。</p>
++  <div class="terminal">
++<span class="prompt">Taro[default] :</span> <span class="cmd">[service]</span>
++
++<span class="out">Services:</span>
++<span class="out">  [*] 1. pollinations      no key needed</span>
++<span class="out">  [ ] 2. pollinations-key  key not set</span>
++<span class="out">  [ ] 3. nvidia            key not set</span>
++<span class="out">  [ ] 4. mistral           key not set</span>
++<span class="out">  [ ] 5. cloudflare        key not set</span>
++
++<span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
++<span class="info">[~] Mistral needs an API key.</span>
++<span class="out">MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):</span>
++<span class="out">[OK] Key for mistral set for this session (...a1b2).</span>
++<span class="prompt">[+]</span> <span class="out">Save to keys.json? (y/N): </span><span class="cmd">y</span>
++<span class="out">[OK] Saved to keys.json (owner-only permissions).</span>
++
++<span class="out">Available models (Mistral):</span>
++<span class="out">  [ ] 1. codestral-latest</span>
++<span class="out">  [ ] 2. mistral-small-latest</span>
++<span class="out">  ...</span>
++<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter=cancel): </span><span class="cmd">2</span>
++<span class="out">[OK] Service: mistral  Model: mistral/mistral-small-latest</span>
++  </div>
++  <ul>
++    <li>モデル一覧は選んだ時点でそのサービスから取得します（10分間キャッシュ）。25件を超えると、先に絞り込み（部分一致）を聞かれます。</li>
++    <li>一覧が取れないサービス（Cloudflare など）では、モデル ID を直接入力します。</li>
++    <li>保存される形式は <code>サービス/モデルID</code> です。接頭辞のない名前（<code>openai</code> など）は PollinationsAI のモデルとして扱われます。</li>
++  </ul>
++  <p><code>[model]</code> は、<strong>今のサービスの中だけ</strong>でモデルを選び直します。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[model]</span>
+ 
+-<span class="out">Available models:</span>
+-<span class="out">  [ ] 1. openai</span>
+-<span class="out">  [ ] 2. mistral</span>
+-<span class="out">  [ ] 3. llama</span>
+-<span class="out">  [*] 4. claude</span>
++<span class="out">Available models (Mistral):</span>
++<span class="out">  [*] 1. mistral-small-latest</span>
+ <span class="out">  ...</span>
++<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter=cancel): </span><span class="cmd">1</span>
++<span class="out">[OK] Model set to: mistral/mistral-small-latest</span>
++  </div>
++</section>
++
++<section>
++  <h2><span class="num">04</span> APIキーの管理</h2>
++  <p><code>[key]</code> でキーの設定・削除ができます（入力は画面に出ません）。</p>
++  <div class="terminal">
++<span class="prompt">Taro[default] :</span> <span class="cmd">[key]</span>
+ 
+-<span class="prompt">[+]</span> <span class="out">Select model (number or name, Enter to keep claude): </span><span class="cmd">mistral</span>
+-<span class="out">[OK] Model set to: mistral</span>
++<span class="out">Services that need an API key:</span>
++<span class="out">  1. pollinations-key  POLLINATIONS_API_KEY     [not set]</span>
++<span class="out">  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]</span>
++<span class="out">  3. mistral           MISTRAL_API_KEY          [not set]</span>
++<span class="out">  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]</span>
+   </div>
++  <p>キーは次の順で探されます。</p>
++  <ol>
++    <li><code>[key]</code> でこのセッション中に入力した値</li>
++    <li>環境変数（例: <code>export NVIDIA_API_KEY=...</code>。Termux なら <code>~/.bashrc</code> に書けます）</li>
++    <li><code>keys.json</code></li>
++  </ol>
++  <div class="note">
++    <code>keys.json</code> は所有者だけが読める権限で作られ、<code>.gitignore</code> に入っています。キーは <code>config.json</code>・セッション・エクスポートには書かれません。誤ってコミットした場合は、キー自体を無効にして作り直してください。
++  </div>
++  <table>
++    <tr><th>サービス</th><th>環境変数</th><th>補足</th></tr>
++    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402）</td></tr>
++    <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>enter.pollinations.ai</code> でキーを取得</td></tr>
++    <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
++    <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
++    <tr><td>cloudflare</td><td><code>CLOUDFLARE_API_TOKEN</code></td><td>アカウントID（<code>CLOUDFLARE_ACCOUNT_ID</code>）も必要。<code>[service]</code> が聞いて <code>config.json</code> に保存します</td></tr>
++  </table>
++  <p>無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。</p>
++
++  <h3>自分のサービスを追加する</h3>
++  <p><code>config.json</code> の <code>providers</code> に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。</p>
++  <div class="terminal">
++<span class="out">{</span>
++<span class="out">  "providers": {</span>
++<span class="out">    "groq": {</span>
++<span class="out">      "chat_url": "https://api.groq.com/openai/v1/chat/completions",</span>
++<span class="out">      "models_url": "https://api.groq.com/openai/v1/models",</span>
++<span class="out">      "key_env": "GROQ_API_KEY",</span>
++<span class="out">      "label": "Groq"</span>
++<span class="out">    },</span>
++<span class="out">    "ollama": {"chat_url": "http://localhost:11434/v1/chat/completions"}</span>
++<span class="out">  }</span>
++<span class="out">}</span>
++  </div>
++  <ul>
++    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code></li>
++    <li>URL の <code>${VAR}</code> は、環境変数、サービスの <code>vars</code> の順で埋められます。</li>
++    <li><code>https://</code> のみ（<code>localhost</code> に限り <code>http://</code> も可）。キーをここに書いても読まれません。</li>
++    <li>セッションは <code>サービス/モデルID</code> を覚えているので、別のマシンに移すときは <code>providers</code> も一緒に移してください。</li>
++  </ul>
+ </section>
+ 
+ <section>
+-  <h2><span class="num">04</span> システムプロンプトの設定</h2>
++  <h2><span class="num">05</span> システムプロンプトの設定</h2>
+   <p><code>[system]</code> でAIの振る舞いを制御できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[system]</span>
+@@ -290,7 +367,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">05</span> temperature / max_tokens の調整</h2>
++  <h2><span class="num">06</span> temperature / max_tokens の調整</h2>
+   <p><code>[config]</code> で生成パラメータを変更できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[config]</span>
+@@ -311,7 +388,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">06</span> ストリーミングモードの切り替え</h2>
++  <h2><span class="num">07</span> ストリーミングモードの切り替え</h2>
+   <p><code>[stream]</code> で「1文字ずつ表示」と「完了後に一括表示」を切り替えます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[stream]</span>
+@@ -321,7 +398,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">07</span> 画像生成</h2>
++  <h2><span class="num">08</span> 画像生成</h2>
+   <p><code>[image]</code> で画像生成モードに入ります。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[image]</span>
+@@ -351,7 +428,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">08</span> マルチライン入力</h2>
++  <h2><span class="num">09</span> マルチライン入力</h2>
+   <p><code>[long]</code> で長文やコードを貼り付けて送信できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[long]</span>
+@@ -367,7 +444,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">09</span> ファイルのインポート</h2>
++  <h2><span class="num">10</span> ファイルのインポート</h2>
+   <p><code>[import]</code> で <code>.md</code> / <code>.txt</code> ファイルを読み込んで送信できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[import]</span>
+@@ -383,7 +460,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">10</span> 会話履歴の検索</h2>
++  <h2><span class="num">11</span> 会話履歴の検索</h2>
+   <p><code>[search]</code> で過去のメッセージをキーワード検索できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[search]</span>
+@@ -397,7 +474,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">11</span> Markdown の再表示とコード保存</h2>
++  <h2><span class="num">12</span> Markdown の再表示とコード保存</h2>
+   <p><code>[render]</code> で直前の応答をMarkdown整形して再表示。<code>[savecode]</code> でコードブロックを抽出保存します。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[render]</span>
+@@ -418,7 +495,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">12</span> セッションのエクスポート</h2>
++  <h2><span class="num">13</span> セッションのエクスポート</h2>
+   <p><code>[export]</code> で現在の会話をMarkdownファイルに出力します。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[export]</span>
+@@ -429,7 +506,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">13</span> Undo とトークン概算</h2>
++  <h2><span class="num">14</span> Undo とトークン概算</h2>
+   <p><code>[undo]</code> で直前のやり取りを削除。<code>[token]</code> で現在のコンテキストの概算トークン数を確認できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[undo]</span>
+@@ -446,7 +523,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">14</span> 複数セッション管理</h2>
++  <h2><span class="num">15</span> 複数セッション管理</h2>
+   <p>v2.8 の目玉機能です。複数の会話を並行して管理できます。</p>
+ 
+   <h3>セッション一覧と切り替え</h3>
+@@ -493,7 +570,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">15</span> 便利なワークフロー例</h2>
++  <h2><span class="num">16</span> 便利なワークフロー例</h2>
+ 
+   <h3>ワークフロー1: 仕事と趣味を分ける</h3>
+   <div class="terminal">
+@@ -531,10 +608,12 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">16</span> コマンド早見表</h2>
++  <h2><span class="num">17</span> コマンド早見表</h2>
+   <table>
+     <tr><th>コマンド</th><th>用途</th></tr>
+-    <tr><td><code>[model]</code></td><td>AIモデルを切り替え</td></tr>
++    <tr><td><code>[service]</code></td><td>サービスを切り替え（キー入力→モデル選択まで）</td></tr>
++    <tr><td><code>[model]</code></td><td>今のサービスのモデルを切り替え</td></tr>
++    <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
+     <tr><td><code>[system]</code></td><td>システムプロンプトを設定</td></tr>
+     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
+     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>
+@@ -560,13 +639,19 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">17</span> トラブルシューティング</h2>
++  <h2><span class="num">18</span> トラブルシューティング</h2>
+ 
+   <h3>HTTP 429 (Rate Limited)</h3>
+-  <p>PollinationsAI の無料 tier にはレート制限があります。数秒〜数十秒待ってから再試行してください。</p>
++  <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
++
++  <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
++  <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
++
++  <h3>認証エラー（HTTP 401 / 403）</h3>
++  <p>キーが違う、または期限切れです。<code>[key]</code> で入れ直してください（環境変数が優先されていないかも確認を。<code>[key]</code> の一覧に取得元が出ます）。</p>
+ 
+   <h3>モデルが応答しない</h3>
+-  <p><code>[model]</code> で別のモデルに切り替えてみてください。PollinationsAI のモデル可用性は変動します。</p>
++  <p><code>[model]</code> で別のモデルに切り替えるか、<code>[service]</code> で別のサービスを試してください。モデルの可用性はサービスごとに変動します。</p>
+ 
+   <h3>セッションが復元されない</h3>
+   <p><code>sessions/</code> ディレクトリ内の <code>.json</code> ファイルを確認してください。手動でファイルを移動した場合は、起動時に自動読込されます。</p>
+diff --git a/pollenchat_guide.md b/pollenchat_guide.md
+index 7e44065..8a701dc 100644
+--- a/pollenchat_guide.md
++++ b/pollenchat_guide.md
+@@ -1,6 +1,6 @@
+-# PollenChat 使い方ガイド
++# NekoChat 使い方ガイド（v2.8.13）
+ 
+-PollenChat は [PollinationsAI](https://pollinations.ai/) 向けのクリーンな CLI チャットクライアントです。
++NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
+ 
+ ## 起動
+ 
+@@ -11,9 +11,6 @@ python pollenchat.py
+ 初回起動時に名前を聞かれます。Enter で環境変数のデフォルト値が使われます。
+ 
+ ```
+-[~] Fetching available models from PollinationsAI...
+-[OK] 7 models available.
+-
+ [+] Your name (Enter for 'user'): Taro
+ [OK] Welcome, Taro! Type [help] for commands.
+ 
+@@ -31,7 +28,7 @@ Taro[default] :
+ ```
+ Taro[default] : PythonでFizzBuzzを書いて
+ 
+-PollenChat (openai): もちろんです。以下にPythonコードを示します。
++NekoChat (openai): もちろんです。以下にPythonコードを示します。
+ ```python
+ for i in range(1, 101):
+     if i % 15 == 0:
+@@ -44,21 +41,107 @@ for i in range(1, 101):
+ 
+ ---
+ 
+-## モデル切り替え
++## サービスとモデルの切り替え
++
++`[service]` でサービスを選ぶと、必要ならそのまま API キーを入力し、続けてモデルを選べます。**モデルを選ぶまでサービスは切り替わりません**（途中でキャンセルすると元のままです）。
++
++```
++Taro[default] : [service]
++
++Services:
++  [*] 1. pollinations      no key needed
++  [ ] 2. pollinations-key  key not set
++  [ ] 3. nvidia            key not set
++  [ ] 4. mistral           key not set
++  [ ] 5. cloudflare        key not set
++
++[+] Select service (number or name, Enter=cancel): 4
++[~] Mistral needs an API key.
++MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):
++[OK] Key for mistral set for this session (...a1b2).
++[+] Save to keys.json? (y/N): y
++[OK] Saved to keys.json (owner-only permissions).
++
++Available models (Mistral):
++  [ ] 1. codestral-latest
++  [ ] 2. mistral-small-latest
++  ...
++[+] Select model (number or name, Enter=cancel): 2
++[OK] Service: mistral  Model: mistral/mistral-small-latest
++```
++
++- モデル一覧は選んだ時点でそのサービスから取得します（10分間キャッシュ）。25件を超えると、先に絞り込み（部分一致）を聞かれます。
++- 一覧が取れないサービス（Cloudflare など）では、モデル ID を直接入力します。
++- 保存される形式は `サービス/モデルID` です。接頭辞のない名前（`openai` など）は PollinationsAI のモデルとして扱われます。
++
++`[model]` は、**今のサービスの中だけ**でモデルを選び直します。
+ 
+ ```
+ Taro[default] : [model]
+ 
+-Available models:
+-  [ ] 1. openai
+-  [ ] 2. mistral
+-  [ ] 3. llama
+-  [*] 4. claude
++Available models (Mistral):
++  [*] 1. mistral-small-latest
+   ...
++[+] Select model (number or name, Enter=cancel): 1
++[OK] Model set to: mistral/mistral-small-latest
++```
++
++---
++
++## APIキーの管理
++
++`[key]` でキーの設定・削除ができます（入力は画面に出ません）。
+ 
+-[+] Select model (number or name, Enter to keep claude): mistral
+-[OK] Model set to: mistral
+ ```
++Taro[default] : [key]
++
++Services that need an API key:
++  1. pollinations-key  POLLINATIONS_API_KEY     [not set]
++  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]
++  3. mistral           MISTRAL_API_KEY          [not set]
++  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]
++```
++
++キーは次の順で探されます。
++
++1. `[key]` でこのセッション中に入力した値
++2. 環境変数（例: `export NVIDIA_API_KEY=...`。Termux なら `~/.bashrc` に書けます）
++3. `keys.json`
++
++`keys.json` は所有者だけが読める権限で作られ、`.gitignore` に入っています。キーは `config.json`・セッション・エクスポートには書かれません。誤ってコミットした場合は、キー自体を無効にして作り直してください。
++
++| サービス | 環境変数 | 補足 |
++|----------|----------|------|
++| pollinations | なし | 匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402） |
++| pollinations-key | `POLLINATIONS_API_KEY` | `enter.pollinations.ai` でキーを取得 |
++| nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
++| mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
++| cloudflare | `CLOUDFLARE_API_TOKEN` | アカウントID（`CLOUDFLARE_ACCOUNT_ID`）も必要。`[service]` が聞いて `config.json` に保存します |
++
++無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。
++
++### 自分のサービスを追加する
++
++`config.json` の `providers` に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。
++
++```json
++{
++  "providers": {
++    "groq": {
++      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
++      "models_url": "https://api.groq.com/openai/v1/models",
++      "key_env": "GROQ_API_KEY",
++      "label": "Groq"
++    },
++    "ollama": {"chat_url": "http://localhost:11434/v1/chat/completions"}
++  }
++}
++```
++
++- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars`
++- URL の `${VAR}` は、環境変数、サービスの `vars` の順で埋められます。
++- `https://` のみ（`localhost` に限り `http://` も可）。キーをここに書いても読まれません。
++- セッションは `サービス/モデルID` を覚えているので、別のマシンに移すときは `providers` も一緒に移してください。
+ 
+ ---
+ 
+@@ -326,7 +409,9 @@ Bye bye, Taro!
+ 
+ | コマンド | 用途 |
+ |---------|------|
+-| `[model]` | AIモデルを切り替え |
++| `[service]` | サービスを切り替え（キー入力→モデル選択まで） |
++| `[model]` | 今のサービスのモデルを切り替え |
++| `[key]` | APIキーの設定・削除 |
+ | `[system]` | システムプロンプトを設定 |
+ | `[config]` | temperature / max_tokens を調整 |
+ | `[stream]` | ストリーミング ON/OFF 切り替え |
+@@ -355,11 +440,19 @@ Bye bye, Taro!
+ 
+ ### HTTP 429 (Rate Limited)
+ 
+-PollinationsAI の無料 tier にはレート制限があります。数秒〜数十秒待ってから再試行してください。
++どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。
++
++### HTTP 500 / 402（PollinationsAI の匿名端点）
++
++旧端点が停止している、または無料でなくなっている可能性があります。`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
++
++### 認証エラー（HTTP 401 / 403）
++
++キーが違う、または期限切れです。`[key]` で入れ直してください（環境変数が優先されていないかも確認を。`[key]` の一覧に取得元が出ます）。
+ 
+ ### モデルが応答しない
+ 
+-`[model]` で別のモデルに切り替えてみてください。PollinationsAI のモデル可用性は変動します。
++`[model]` で別のモデルに切り替えるか、`[service]` で別のサービスを試してください。モデルの可用性はサービスごとに変動します。
+ 
+ ### セッショが復元されない
+ 
+diff --git a/usage.txt b/usage.txt
+index 29f74fe..4fb1f88 100644
+--- a/usage.txt
++++ b/usage.txt
+@@ -1,4 +1,6 @@
+-[model]      — モデル選択
++[service]    — サービス切り替え（PollinationsAI / NVIDIA / Mistral / Cloudflare / 自作）。キー入力→モデル選択まで一続き
++[model]      — 現在のサービスのモデル選択
++[key]        — APIキーの設定・削除（入力は非表示、keys.json に保存も可）
+ [system]     — システムプロンプト設定（複数行入力可、[end]で確定 / [reset]でデフォルトに戻す）
+ [config]     — temperature / max_tokens
+ [stream]     — ストリーミングON/OFF
+@@ -27,4 +29,4 @@
+ [exit]       — 終了（全セッション自動保存）
+ 
+ ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
+-※ v2.8.5〜
++※ v2.8.13〜
