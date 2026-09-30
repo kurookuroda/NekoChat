@@ -1,0 +1,286 @@
+diff --git a/pollenchat.py b/pollenchat.py
+index 19e6b8c..670325c 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -129,13 +129,14 @@ import os
+ import sys
+ import json
+ import getpass
++import copy
+ import time
+ import re
+ import random
+ import unicodedata
+ import datetime
+ import requests
+-from typing import Optional
++from typing import Any, Optional
+ from urllib.parse import quote
+ 
+ from colorama import init, Fore, Style
+@@ -159,11 +160,12 @@ MODELS_URL = "https://text.pollinations.ai/models"
+ # ============ PROVIDERS ============
+ # Registry of OpenAI-compatible chat services. Keep only slow-changing facts here
+ # (URLs, key env var names); model lists are fetched from the service at runtime.
+-#   chat_url  : full chat-completions endpoint (${VAR} is expanded from the environment)
++#   chat_url  : full chat-completions endpoint (${VAR} is expanded from the environment,
++#               then from the service's "vars" in config.json)
+ #   models_url: model list endpoint, or None if unavailable (manual model ID entry)
+ #   key_env   : environment variable holding the API key, or None (no key needed)
+ #   rate_hint : shown on HTTP 429
+-PROVIDERS: dict[str, dict[str, Optional[str]]] = {
++PROVIDERS: dict[str, dict[str, Any]] = {
+     "pollinations": {
+         "label": "PollinationsAI",
+         "chat_url": API_BASE,
+@@ -171,7 +173,7 @@ PROVIDERS: dict[str, dict[str, Optional[str]]] = {
+         "key_env": None,
+         "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
+         "fail_hint": (
+-            "The anonymous legacy endpoint may be down. Switch with [service], or set "
++            "The anonymous legacy endpoint may be down or no longer free. Switch with [service], or set "
+             "POLLINATIONS_API_KEY and use the pollinations-key service."
+         ),
+     },
+@@ -205,6 +207,84 @@ PROVIDERS: dict[str, dict[str, Optional[str]]] = {
+     },
+ }
+ DEFAULT_PROVIDER = "pollinations"
++_BUILTIN_PROVIDERS = copy.deepcopy(PROVIDERS)
++
++# ---- user-defined / overridden services (the optional "providers" block of config.json) ----
++# {"providers": {"cloudflare": {"vars": {"CLOUDFLARE_ACCOUNT_ID": "..."}},
++#                "groq": {"chat_url": "https://api.groq.com/openai/v1/chat/completions",
++#                         "models_url": "https://api.groq.com/openai/v1/models",
++#                         "key_env": "GROQ_API_KEY"}}}
++# API keys never go here (use [key] / keys.json / environment variables).
++_providers_cfg: dict[str, dict[str, Any]] = {}
++_config_warnings: list[str] = []
++_PROVIDER_STR_FIELDS = ("label", "chat_url", "models_url", "key_env", "rate_hint", "fail_hint")
++_NULLABLE_FIELDS = ("models_url", "key_env")
++_LOCAL_HTTP = re.compile(r"^http://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(/|$)")
++
++def _url_ok(url: str) -> bool:
++    """https only; plain http is accepted for a local server (e.g. Ollama)."""
++    return url.startswith("https://") or bool(_LOCAL_HTTP.match(url))
++
++def apply_providers_config(block: object) -> None:
++    """Rebuild PROVIDERS from the built-ins plus the config.json block. Bad entries are
++    skipped with a warning (shown after the banner)."""
++    global _providers_cfg
++    PROVIDERS.clear()
++    PROVIDERS.update(copy.deepcopy(_BUILTIN_PROVIDERS))
++    _providers_cfg = {}
++    if block is None:
++        return
++    if not isinstance(block, dict):
++        _config_warnings.append("config.json: 'providers' must be an object; ignored.")
++        return
++    for name, ov in block.items():
++        where = f"config.json providers.{name}"
++        if not isinstance(name, str) or not isinstance(ov, dict):
++            _config_warnings.append(f"{where}: must be an object; ignored.")
++            continue
++        is_new = name not in PROVIDERS
++        if is_new and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
++            _config_warnings.append(f"{where}: service names use a-z, 0-9 and '-' only; ignored.")
++            continue
++        clean: dict[str, Any] = {}
++        for k, v in ov.items():
++            if k in _PROVIDER_STR_FIELDS:
++                if v is None and k in _NULLABLE_FIELDS:
++                    clean[k] = None
++                elif isinstance(v, str) and v.strip():
++                    clean[k] = v.strip()
++                else:
++                    _config_warnings.append(f"{where}.{k}: must be a non-empty string; ignored.")
++            elif k == "vars":
++                if isinstance(v, dict) and all(isinstance(a, str) and isinstance(b, str) for a, b in v.items()):
++                    clean["vars"] = dict(v)
++                else:
++                    _config_warnings.append(f"{where}.vars: must be an object of strings; ignored.")
++            elif k.lower().replace("_", "") in ("apikey", "key", "token"):
++                _config_warnings.append(f"{where}.{k}: keys are not read from config.json; use [key].")
++            else:
++                _config_warnings.append(f"{where}.{k}: unknown field; ignored.")
++        for k in ("chat_url", "models_url"):
++            if clean.get(k) and not _url_ok(clean[k]):
++                _config_warnings.append(f"{where}.{k}: only https:// (or http://localhost) is allowed; ignored.")
++                clean.pop(k)
++        if is_new and not clean.get("chat_url"):
++            _config_warnings.append(f"{where}: a new service needs a valid chat_url; ignored.")
++            continue
++        if not clean:
++            continue
++        if is_new:
++            PROVIDERS[name] = {
++                "label": name, "chat_url": None, "models_url": None, "key_env": None,
++                "rate_hint": f"{name}: rate limit reached. Wait a moment and retry.",
++            }
++        PROVIDERS[name].update(clean)
++        _providers_cfg[name] = clean
++
++def _flush_config_warnings() -> None:
++    for w in _config_warnings:
++        print(f"{Fore.YELLOW}[!] {w}{Style.RESET_ALL}")
++    _config_warnings.clear()
+ 
+ def split_model(full: str) -> tuple[str, str]:
+     """'nvidia/meta/llama-3.1-70b-instruct' -> ('nvidia', 'meta/llama-3.1-70b-instruct').
+@@ -277,11 +357,12 @@ def key_source(provider: str) -> Optional[str]:
+ def _mask_key(key: str) -> str:
+     return "..." + key[-4:] if len(key) >= 12 else "****"
+ 
+-def _expand_env(text: str) -> tuple[str, list[str]]:
+-    """Expand ${VAR} from the environment. Returns (text, names of missing variables)."""
++def _expand_env(text: str, extra: Optional[dict[str, str]] = None) -> tuple[str, list[str]]:
++    """Expand ${VAR} from the environment, then from `extra` (a service's "vars").
++    Returns (text, names of missing variables)."""
+     missing: list[str] = []
+     def repl(m: re.Match) -> str:
+-        val = os.environ.get(m.group(1))
++        val = os.environ.get(m.group(1)) or (extra or {}).get(m.group(1))
+         if not val:
+             missing.append(m.group(1))
+             return ""
+@@ -292,10 +373,10 @@ def resolve_request(full_model: str) -> Optional[tuple[str, str, dict[str, str]]
+     """Return (url, model_id, extra_headers) for the model, or None after printing why not."""
+     provider, model_id = split_model(full_model)
+     spec = PROVIDERS[provider]
+-    url, missing = _expand_env(str(spec["chat_url"]))
++    url, missing = _expand_env(str(spec["chat_url"]), spec.get("vars"))
+     if missing:
+-        print(f"{Fore.RED}[!] {spec['label']}: environment variable not set: "
+-              f"{', '.join(missing)}{Style.RESET_ALL}")
++        print(f"{Fore.RED}[!] {spec['label']}: not set: {', '.join(missing)} "
++              f"(environment variable, or providers.{provider}.vars in config.json){Style.RESET_ALL}")
+         return None
+     headers: dict[str, str] = {}
+     if spec.get("key_env"):
+@@ -569,6 +650,8 @@ def apply_config(cfg: dict) -> None:
+     global current_model, _system_prompt, username, _stream_mode, _temperature, _max_tokens
+     if "model" in cfg and isinstance(cfg["model"], str):
+         current_model = cfg["model"]
++    if "providers" in cfg:
++        apply_providers_config(cfg["providers"])
+     if "system_prompt" in cfg and isinstance(cfg["system_prompt"], str):
+         _system_prompt = cfg["system_prompt"]
+     if "username" in cfg and isinstance(cfg["username"], str):
+@@ -584,7 +667,7 @@ def apply_config(cfg: dict) -> None:
+             _max_tokens = cfg["max_tokens"]
+ 
+ def build_config() -> dict:
+-    return {
++    cfg: dict[str, Any] = {
+         "model": current_model,
+         "system_prompt": _system_prompt,
+         "username": username,
+@@ -592,6 +675,9 @@ def build_config() -> dict:
+         "temperature": _temperature,
+         "max_tokens": _max_tokens,
+     }
++    if _providers_cfg:  # only written when the user has customised services
++        cfg["providers"] = _providers_cfg
++    return cfg
+ 
+ # ============ MARKDOWN RENDERER ============
+ def render_markdown(text: str) -> str:
+@@ -674,6 +760,10 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+     url = spec.get("models_url")
+     if not url:
+         return None
++    url, missing = _expand_env(str(url), spec.get("vars"))
++    if missing:
++        print(f"{Fore.RED}[!] {spec['label']}: not set: {', '.join(missing)}{Style.RESET_ALL}")
++        return None
+     cached = _models_cache.get(provider)
+     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+         return cached[1]
+@@ -792,7 +882,7 @@ def set_key() -> None:
+ 
+     _enter_key(name)
+ 
+-def _enter_key(name: str) -> bool:
++def _enter_key(name: str, note: bool = True) -> bool:
+     """Ask for the key of a service (hidden input). True if a key is now set for this session."""
+     env = PROVIDERS[name]["key_env"]
+     try:
+@@ -830,13 +920,33 @@ def _enter_key(name: str) -> bool:
+         if save_keys(keys):
+             print(f"{Fore.GREEN}[OK] Saved to {KEYS_FILE} (owner-only permissions).{Style.RESET_ALL}")
+ 
+-    _note_cloudflare_account(name)
++    if note:
++        missing = _missing_vars(name)
++        if missing:
++            print(f"{Fore.YELLOW}[~] {PROVIDERS[name]['label']} also needs: {', '.join(missing)} "
++                  f"([service] will ask for it).{Style.RESET_ALL}")
+     return True
+ 
+-def _note_cloudflare_account(name: str) -> None:
+-    if name == "cloudflare" and not (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip():
+-        print(f"{Fore.YELLOW}[~] Cloudflare also needs the account ID: "
+-              f"set CLOUDFLARE_ACCOUNT_ID.{Style.RESET_ALL}")
++def _missing_vars(name: str) -> list[str]:
++    """${VAR} names in the service's chat URL that have no value yet."""
++    spec = PROVIDERS[name]
++    return list(dict.fromkeys(_expand_env(str(spec["chat_url"]), spec.get("vars"))[1]))
++
++def _ensure_url_vars(name: str) -> bool:
++    """Ask for any missing ${VAR} of the chat URL (e.g. the Cloudflare account ID, which is
++    not a secret) and keep it in config.json. False if the user skipped."""
++    missing = _missing_vars(name)
++    for var in missing:
++        val = _ask(f"{Fore.CYAN}[+] {var} (Enter=skip): {Style.RESET_ALL}")
++        if not val or any(c.isspace() for c in val):
++            print(f"{Fore.YELLOW}[~] {var} is required for {PROVIDERS[name]['label']}.{Style.RESET_ALL}")
++            return False
++        PROVIDERS[name].setdefault("vars", {})[var] = val
++        _providers_cfg.setdefault(name, {}).setdefault("vars", {})[var] = val
++    if missing:
++        save_config(build_config())
++        print(f"{Fore.GREEN}[OK] Saved to config.json (this value is not secret).{Style.RESET_ALL}")
++    return True
+ 
+ # ============ SERVICE COMMAND ============
+ def select_service() -> None:
+@@ -868,14 +978,14 @@ def select_service() -> None:
+         print(f"{Fore.RED}[!] Unknown service.{Style.RESET_ALL}")
+         return
+ 
+-    if PROVIDERS[name].get("key_env"):
+-        if get_api_key(name):
+-            _note_cloudflare_account(name)
+-        else:
+-            print(f"{Fore.YELLOW}[~] {PROVIDERS[name]['label']} needs an API key.{Style.RESET_ALL}")
+-            if not _enter_key(name):
+-                print(f"{Fore.YELLOW}[~] Service not changed.{Style.RESET_ALL}")
+-                return
++    if PROVIDERS[name].get("key_env") and not get_api_key(name):
++        print(f"{Fore.YELLOW}[~] {PROVIDERS[name]['label']} needs an API key.{Style.RESET_ALL}")
++        if not _enter_key(name, note=False):
++            print(f"{Fore.YELLOW}[~] Service not changed.{Style.RESET_ALL}")
++            return
++    if not _ensure_url_vars(name):
++        print(f"{Fore.YELLOW}[~] Service not changed.{Style.RESET_ALL}")
++        return
+ 
+     model = _pick_model(name)
+     if model is None:
+@@ -1352,6 +1462,8 @@ def send_chat(
+         else:
+             detail = f" — {reason}" if reason else ""
+             print(f"{Fore.RED}[!] HTTP Error: {e}{detail}{Style.RESET_ALL}")
++            if code == 402 and spec.get("fail_hint"):
++                print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
+         return None
+     except Exception as e:
+         print(f"{Fore.RED}[!] Request failed: {e}{Style.RESET_ALL}")
+@@ -2277,6 +2389,7 @@ def main() -> None:
+ 
+     clear()
+     print(Fore.MAGENTA + BANNER + Style.RESET_ALL)
++    _flush_config_warnings()
+ 
+     # Load sessions AFTER clearing screen so broken-JSON warnings are visible
+     _auto_load_all_sessions()
