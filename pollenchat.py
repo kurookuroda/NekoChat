@@ -129,6 +129,7 @@ import os
 import sys
 import json
 import getpass
+import time
 import re
 import random
 import unicodedata
@@ -170,8 +171,8 @@ PROVIDERS: dict[str, dict[str, Optional[str]]] = {
         "key_env": None,
         "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
         "fail_hint": (
-            "The anonymous legacy endpoint may be down. Try another service, or set "
-            "POLLINATIONS_API_KEY and use a pollinations-key/ model."
+            "The anonymous legacy endpoint may be down. Switch with [service], or set "
+            "POLLINATIONS_API_KEY and use the pollinations-key service."
         ),
     },
     "pollinations-key": {
@@ -369,7 +370,6 @@ _img_width: int = 1024
 _img_height: int = 1024
 _img_seed: Optional[int] = None
 
-available_models: list[str] = []
 username: str = "User"
 
 # ============ UTILS ============
@@ -648,52 +648,122 @@ def _extract_model_name(item: str | dict) -> Optional[str]:
                 return val
     return None
 
-def fetch_models() -> None:
-    global available_models
-    try:
-        r = requests.get(MODELS_URL, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list):
-                names = [_extract_model_name(m) for m in data]
-                available_models = [n for n in names if n is not None]
-            else:
-                available_models = []
-        else:
-            available_models = []
-    except Exception as e:
-        print(f"{Fore.YELLOW}[!] Could not fetch models ({e}); using defaults.{Style.RESET_ALL}")
-        available_models = []
+MODELS_CACHE_TTL = 600  # seconds
+_models_cache: dict[str, tuple[float, list[str]]] = {}
+_DEFAULT_MODELS = ["openai", "mistral", "llama", "claude", "gemini", "deepseek", "qwen"]
 
-    if not available_models:
-        available_models = [
-            "openai", "mistral", "llama", "claude",
-            "gemini", "deepseek", "qwen",
-        ]
+def _parse_model_list(data: object) -> list[str]:
+    """Accepts a bare list or an OpenAI-style {"data": [...]} object."""
+    if isinstance(data, dict):
+        for k in ("data", "models", "result"):
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+    if not isinstance(data, list):
+        return []
+    ids: list[str] = []
+    for item in data:
+        name = _extract_model_name(item)
+        if name and name not in ids:
+            ids.append(name)
+    return ids
+
+def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+    """Model IDs offered by a service, or None if they can't be listed (enter an ID by hand)."""
+    spec = PROVIDERS[provider]
+    url = spec.get("models_url")
+    if not url:
+        return None
+    cached = _models_cache.get(provider)
+    if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+        return cached[1]
+    headers = {"User-Agent": "PollenChat/2.8.12"}
+    if spec.get("key_env"):
+        key = get_api_key(provider)
+        if not key:
+            print(f"{Fore.RED}[!] {spec['label']}: API key not set "
+                  f"(use [key] or set {spec['key_env']}){Style.RESET_ALL}")
+            return None
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        ids = _parse_model_list(r.json())
+    except Exception as e:
+        print(f"{Fore.YELLOW}[!] Could not fetch models from {spec['label']} ({e}){Style.RESET_ALL}")
+        return None
+    if not ids:
+        return None
+    if provider != DEFAULT_PROVIDER:
+        ids.sort(key=str.lower)
+    _models_cache[provider] = (time.time(), ids)
+    return ids
+
+def make_model_string(provider: str, model_id: str) -> str:
+    """Stored form: 'service/model-id'. Plain PollinationsAI names stay bare (old configs)."""
+    if provider == DEFAULT_PROVIDER and split_model(model_id) == (DEFAULT_PROVIDER, model_id):
+        return model_id
+    return f"{provider}/{model_id}"
+
+def _model_from_text(text: str, provider: str, ids: Optional[list[str]]) -> str:
+    """Typed model -> stored string. An exact ID from the service's own list always wins
+    (so 'nvidia/llama-...' typed under the nvidia service is not misread as a service prefix);
+    otherwise a registered 'service/...' prefix switches service."""
+    if ids and text in ids:
+        return make_model_string(provider, text)
+    head, sep, rest = text.partition("/")
+    if sep and rest and head in PROVIDERS:
+        return text
+    return make_model_string(provider, text)
+
+def _pick_model(provider: str) -> Optional[str]:
+    """Let the user choose a model of one service. Returns the stored string or None (cancelled)."""
+    spec = PROVIDERS[provider]
+    ids = fetch_models_for(provider)
+    if ids is None and provider == DEFAULT_PROVIDER:
+        print(f"{Fore.YELLOW}[~] Using the built-in model list.{Style.RESET_ALL}")
+        ids = list(_DEFAULT_MODELS)
+
+    if ids:
+        shown = ids
+        if len(ids) > 25:
+            flt = _ask(
+                f"\n{Fore.CYAN}[+] {len(ids)} models. Filter (substring, Enter=show all): {Style.RESET_ALL}"
+            ).lower()
+            if flt:
+                shown = [m for m in ids if flt in m.lower()]
+                if not shown:
+                    print(f"{Fore.RED}[!] No model matches '{flt}'.{Style.RESET_ALL}")
+                    return None
+        print(f"\n{Fore.YELLOW}Available models ({spec['label']}):{Style.RESET_ALL}")
+        for i, m in enumerate(shown, 1):
+            marker = f"{Fore.GREEN}*{Style.RESET_ALL}" if make_model_string(provider, m) == current_model else " "
+            print(f"  [{marker}] {i}. {m}")
+        choice = _ask(
+            f"\n{Fore.CYAN}[+] Select model (number or name, Enter=cancel): {Style.RESET_ALL}"
+        )
+    else:
+        print(f"{Fore.YELLOW}[~] No model list for {spec['label']}; enter a model ID.{Style.RESET_ALL}")
+        choice = _ask(f"{Fore.CYAN}[+] Model ID (Enter=cancel): {Style.RESET_ALL}")
+    if not choice:
+        return None
+
+    if ids and choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(shown):
+            return make_model_string(provider, shown[idx])
+        print(f"{Fore.RED}[!] Invalid number.{Style.RESET_ALL}")
+        return None
+    return _model_from_text(choice, provider, ids)
 
 def select_model() -> None:
+    """[model]: choose a model within the current service."""
     global current_model
-    print(f"\n{Fore.YELLOW}Available models:{Style.RESET_ALL}")
-    for i, m in enumerate(available_models, 1):
-        marker = f"{Fore.GREEN}*{Style.RESET_ALL}" if m == current_model else " "
-        print(f"  [{marker}] {i}. {m}")
-
-    choice = _ask(
-        f"\n{Fore.CYAN}[+] Select model (number or name, Enter to keep {current_model}): {Style.RESET_ALL}"
-    )
-    if not choice:
+    provider, _ = split_model(current_model)
+    model = _pick_model(provider)
+    if model is None:
         return
-
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(available_models):
-            current_model = available_models[idx]
-        else:
-            print(f"{Fore.RED}[!] Invalid number.{Style.RESET_ALL}")
-            return
-    else:
-        current_model = choice
-
+    current_model = model
     print(f"{Fore.GREEN}[OK] Model set to: {current_model}{Style.RESET_ALL}")
     save_config(build_config())
 
@@ -720,6 +790,10 @@ def set_key() -> None:
         print(f"{Fore.RED}[!] Unknown service.{Style.RESET_ALL}")
         return
 
+    _enter_key(name)
+
+def _enter_key(name: str) -> bool:
+    """Ask for the key of a service (hidden input). True if a key is now set for this session."""
     env = PROVIDERS[name]["key_env"]
     try:
         value = getpass.getpass(
@@ -727,9 +801,9 @@ def set_key() -> None:
         ).strip()
     except (EOFError, KeyboardInterrupt):
         print(f"\n{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
-        return
+        return False
     if not value:
-        return
+        return False
 
     if value == "delete":
         _session_keys.pop(name, None)
@@ -737,15 +811,15 @@ def set_key() -> None:
         if name in keys:
             del keys[name]
             if not save_keys(keys):
-                return
+                return False
         print(f"{Fore.GREEN}[OK] Removed the stored key for {name}.{Style.RESET_ALL}")
         if (os.environ.get(env) or "").strip():
             print(f"{Fore.YELLOW}[~] {env} is still set in the environment.{Style.RESET_ALL}")
-        return
+        return False
 
     if any(c.isspace() for c in value):
         print(f"{Fore.RED}[!] A key must not contain spaces or line breaks.{Style.RESET_ALL}")
-        return
+        return False
 
     _session_keys[name] = value
     print(f"{Fore.GREEN}[OK] Key for {name} set for this session ({_mask_key(value)}).{Style.RESET_ALL}")
@@ -756,9 +830,60 @@ def set_key() -> None:
         if save_keys(keys):
             print(f"{Fore.GREEN}[OK] Saved to {KEYS_FILE} (owner-only permissions).{Style.RESET_ALL}")
 
+    _note_cloudflare_account(name)
+    return True
+
+def _note_cloudflare_account(name: str) -> None:
     if name == "cloudflare" and not (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip():
         print(f"{Fore.YELLOW}[~] Cloudflare also needs the account ID: "
               f"set CLOUDFLARE_ACCOUNT_ID.{Style.RESET_ALL}")
+
+# ============ SERVICE COMMAND ============
+def select_service() -> None:
+    """[service]: pick a service, enter its key if needed, then pick a model.
+    The service only changes once a model has been chosen."""
+    global current_model
+    names = list(PROVIDERS)
+    cur = split_model(current_model)[0]
+    print(f"\n{Fore.YELLOW}Services:{Style.RESET_ALL}")
+    for i, n in enumerate(names, 1):
+        sp = PROVIDERS[n]
+        if not sp.get("key_env"):
+            status = "no key needed"
+        elif key_source(n):
+            status = f"{Fore.GREEN}key: {key_source(n)}{Style.RESET_ALL}"
+        else:
+            status = f"{Fore.RED}key not set{Style.RESET_ALL}"
+        marker = f"{Fore.GREEN}*{Style.RESET_ALL}" if n == cur else " "
+        print(f"  [{marker}] {i}. {n:<17} {status}")
+
+    choice = _ask(f"\n{Fore.CYAN}[+] Select service (number or name, Enter=cancel): {Style.RESET_ALL}")
+    if not choice:
+        return
+    if choice.isdigit() and 1 <= int(choice) <= len(names):
+        name = names[int(choice) - 1]
+    elif choice in names:
+        name = choice
+    else:
+        print(f"{Fore.RED}[!] Unknown service.{Style.RESET_ALL}")
+        return
+
+    if PROVIDERS[name].get("key_env"):
+        if get_api_key(name):
+            _note_cloudflare_account(name)
+        else:
+            print(f"{Fore.YELLOW}[~] {PROVIDERS[name]['label']} needs an API key.{Style.RESET_ALL}")
+            if not _enter_key(name):
+                print(f"{Fore.YELLOW}[~] Service not changed.{Style.RESET_ALL}")
+                return
+
+    model = _pick_model(name)
+    if model is None:
+        print(f"{Fore.YELLOW}[~] Service not changed.{Style.RESET_ALL}")
+        return
+    current_model = model
+    print(f"{Fore.GREEN}[OK] Service: {name}  Model: {current_model}{Style.RESET_ALL}")
+    save_config(build_config())
 
 # ============ SYSTEM PROMPT ============
 def set_system_prompt() -> None:
@@ -2100,7 +2225,8 @@ def clear_history() -> None:
 HELP_TEXT = r"""
 PollenChat Commands:
 
-  [model]       — Select AI model
+  [service]     — Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare ...) and pick its model
+  [model]       — Select a model of the current service
   [key]         — Set or remove API keys for services that need one
   [system]      — Set or view the system prompt
   [name]        — Change your display name (past messages keep the name they were sent with)
@@ -2154,10 +2280,6 @@ def main() -> None:
 
     # Load sessions AFTER clearing screen so broken-JSON warnings are visible
     _auto_load_all_sessions()
-
-    print(f"{Fore.CYAN}[~] Fetching available models from PollinationsAI...{Style.RESET_ALL}")
-    fetch_models()
-    print(f"{Fore.GREEN}[OK] {len(available_models)} models available.{Style.RESET_ALL}\n")
 
     if not cfg.get("username"):
         default_name = os.environ.get("USER", os.environ.get("USERNAME", "User"))
@@ -2225,6 +2347,8 @@ def main() -> None:
                     print(HELP_TEXT)
                 elif cmd in ("[model]", "model"):
                     select_model()
+                elif cmd == "[service]":
+                    select_service()
                 elif cmd == "[key]":
                     set_key()
                 elif cmd in ("[system]", "system"):
