@@ -1,4 +1,4 @@
-# NekoChat 使い方ガイド（v2.8.13）
+# NekoChat 使い方ガイド（v2.8.14）
 
 NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
 
@@ -147,19 +147,50 @@ Services that need an API key:
 
 ## システムプロンプト
 
+システムプロンプトは**2つの層**に分かれています。
+
+| 層 | コマンド | 保存先 | 効く範囲 |
+|----|----------|--------|----------|
+| 全体 | `[system]` | `config.json` | すべてのセッション |
+| セッション | `[system session]` | そのセッションのファイル | 今のセッションだけ |
+
+AI に送られるのは、**全体のプロンプト、空行、セッションのプロンプト**の順に連結した、1つの system メッセージです。
+
 ```
-Taro[default] : [system]
+Taro[default] : [system session]
 
-Current system prompt:
-  You are a helpful assistant.
+System prompt layers:
+  Global:             You are a helpful assistant.
+  Session [default]:  (none)
+  Sent to the AI:     28 characters
 
-[+] Enter new prompt (empty line = keep, [reset] = default):
-あなたは優秀なPythonプログラマーです。簡潔に回答してください。
+Enter the prompt for session 'default'. Type [end] to finish, [reset] to remove it:
+このセッションでは、コードレビューだけを行う。
+[end]
 
-[OK] System prompt updated.
+Received 1 line(s), 23 characters:
+  このセッションでは、コードレビューだけを行う。
+[+] Apply to session 'default'? (Y/n):
+[OK] Session prompt set for 'default'.
 ```
 
-`[reset]` と入力するとデフォトに戻ります。
+- `[system]` も同じ形式で、**全体の層**を変更します（`[reset]` で初期の文言に戻ります）。
+- `[system session]` の `[reset]` は、**セッションの層を消して**、全体の層だけに戻します。
+- どちらも、確定の前にプレビューを表示して `Apply? (Y/n)` と聞きます。Enter だけなら確定、`n` で取り消しです。Ctrl+D や Ctrl+C でも、変更せずに取り消せます。
+- 変更は**次の送信から**効きます。過去の応答は履歴に残るので、前の指示の口調が残ることがあります。きっぱり切り替えたいときは、`[new]` で新しいセッションを作ってください。
+- `[sessions]` の一覧では、セッションのプロンプトがあるセッションに `[+prompt]` が付きます。
+- `[new]` で作ったセッションは、セッションのプロンプトなしで始まります。`[rename]`・`[delete]`・`[save]` では、セッションのプロンプトも一緒に動きます。`[export]` と `[token]` は、実際に送られる内容で計算します。
+- 旧式の `[load]` は、ファイルにあるセッションのプロンプトを戻しますが、全体のプロンプトは書き換えません。
+
+### 複数行の入力と貼り付け
+
+`[system]`、`[system session]`、`[long]` は、単独の行の `[end]` まで、複数行を読みます。
+
+- **貼り付けは、まとまり全体を読んでから判断します。** `[end]` が終了の合図になるのは、貼り付けの**最後の行**にあるとき（または手で単独で打ったとき）だけです。`[reset]` は、それだけの行のときだけ有効です。貼り付けの途中にあるときは、**ふつうの文章として残し**、その旨を表示します。そのあとで、`[end]` を自分で入力してください。
+- `[end]` のあと0.3秒以内に届いた行は、AI へは送らず、捨てて報告します。ただし、0.3秒を超える間隔で、細切れに届く貼り付け（遅い SSH など）では、漏れることがあります。
+- 入力した行は、上矢印の履歴には残りません。
+- 貼り付けの検出は、時間に頼っていて、POSIX の端末（Linux、macOS、Termux）で働きます。Windows では、これまでどおり1行ずつ読みます。
+- `[system ほかの文字]` と入力すると、使い方が表示されます（AI には送られません）。
 
 ---
 
@@ -412,7 +443,8 @@ Bye bye, Taro!
 | `[service]` | サービスを切り替え（キー入力→モデル選択まで） |
 | `[model]` | 今のサービスのモデルを切り替え |
 | `[key]` | APIキーの設定・削除 |
-| `[system]` | システムプロンプトを設定 |
+| `[system]` | 全体のシステムプロンプトを設定（全セッション共通） |
+| `[system session]` | 今のセッションだけのシステムプロンプトを設定 |
 | `[config]` | temperature / max_tokens を調整 |
 | `[stream]` | ストリーミング ON/OFF 切り替え |
 | `[image]` | 画像生成モード |

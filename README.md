@@ -1,4 +1,4 @@
-# NekoChat v2.8.13
+# NekoChat v2.8.14
 
 A clean, harmless CLI chat client for several LLM services.
 
@@ -9,7 +9,7 @@ NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat ap
 - **Multiple services** — Switch service with `[service]` and model with `[model]`; add your own OpenAI-compatible service in `config.json`
 - **API keys kept out of the way** — Set keys with `[key]`; they are stored only in `keys.json` (owner-only, git-ignored), never in configs, sessions or exports
 - **Streaming & batch modes** — Toggle live token-by-token output or wait-for-complete display
-- **System prompt editing** — Customize the assistant's behavior with `[system]`
+- **System prompt layers** — A global prompt with `[system]` and an optional prompt for just the current session with `[system session]`
 - **Temperature / max_tokens control** — Fine-tune generation parameters with `[config]`
 - **Image generation** — Generate images from text prompts inside `[image]` mode, with configurable size and seed
 - **Multiline input** — Paste or type long messages with `[long]` (type `[end]` on its own line to finish; blank lines are preserved)
@@ -108,7 +108,8 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
 | `[service]` | Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare, your own) and pick its model |
 | `[model]` | Select a model of the current service |
 | `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
-| `[system]` | Set or view the system prompt (multi-line, type `[end]` to finish, `[reset]` for default) |
+| `[system]` | Set the **global** system prompt, shared by every session (multi-line, `[end]` to finish, `[reset]` for default) |
+| `[system session]` | Set a system prompt for the **current session only**; it is added after the global one (`[reset]` removes it) |
 | `[config]` | Set `temperature` / `max_tokens` |
 | `[stream]` | Toggle streaming / batch display mode |
 
@@ -181,7 +182,31 @@ NekoChat supports multiple parallel conversation sessions. Each session is an in
 - **Auto-load**: On startup, all `.json` files in `sessions/` are automatically loaded as sessions.
 - **Auto-save**: On exit (`[exit]` or Ctrl+D), all sessions are automatically saved back to `sessions/`.
 - **Current session indicator**: The prompt shows the active session name: `User[work] :`
-- **Session-agnostic config**: `model` (including its service), `system_prompt`, `temperature`, and `max_tokens` are global settings shared across all sessions.
+- **Session-agnostic config**: `model` (including its service), the global `system_prompt`, `temperature`, and `max_tokens` are global settings shared across all sessions. The one per-session setting is the session system prompt (see below).
+
+## System Prompts
+
+There are two layers:
+
+| Layer | Command | Stored in | Applies to |
+|-------|---------|-----------|------------|
+| Global | `[system]` | `config.json` | every session |
+| Session | `[system session]` | the session's file in `sessions/` | the current session only |
+
+What is sent to the AI is the global prompt, a blank line, then the session prompt, as **one** system message. `[system]` and `[system session]` first show both layers and how many characters are sent. `[sessions]` marks sessions that have a session prompt (`[+prompt]`). `[new]` starts without one, `[rename]` / `[delete]` / `[save]` carry it along, and `[export]` / `[token]` use what is actually sent. A change takes effect from the next message; earlier replies stay in the history, so for a clean break start a new session.
+
+`[load]` (legacy) restores a session's own prompt but no longer overwrites the global one.
+
+### Typing and pasting multi-line text
+
+`[system]`, `[system session]` and `[long]` read lines until `[end]` on its own line.
+
+- **Pasted text is read as a whole before it is judged.** `[end]` ends the input only as the last line of a paste (or when typed alone). `[reset]` counts only when it is alone on its line. If either appears elsewhere inside pasted text it is kept as ordinary text and a notice is shown; type `[end]` yourself afterwards.
+- Lines that arrive within 0.3 s after `[end]` are discarded and reported, never sent to the AI. A paste that reaches the terminal in pieces more than 0.3 s apart (for example over a slow SSH link) can still leak.
+- `[system]` and `[system session]` show a preview (line and character counts, first lines) and ask `Apply? (Y/n)`; the first line's indentation is kept. Ctrl+D cancels instead of applying half-typed text; Ctrl+C cancels as before.
+- The lines typed here are removed from the up-arrow history.
+- Paste detection relies on timing and works on POSIX terminals (Linux, macOS, Termux). On Windows lines are read one at a time, as before.
+- `[system <something else>]` prints the usage instead of being sent to the AI.
 
 ## Image Generation
 
@@ -211,7 +236,7 @@ This is only an approximation. Actual token counts depend on the model's tokeniz
 - Image generation (`[image]`) always uses PollinationsAI's image endpoint, whichever chat service is selected, and may be affected by the same availability issues.
 - The `max_tokens` parameter is optional; if unset, the server default is used.
 - Image generation parameters (width, height, seed) are session-only and not persisted to `config.json`.
-- Session files store model, username, system prompt, temperature, max_tokens, and conversation history.
+- Session files store model, username, temperature, max_tokens, conversation history, and the session's own system prompt (`session_prompt`, only if set). The global system prompt lives in `config.json`; older session files may still contain a `system_prompt` field, which is ignored.
 
 ## License
 

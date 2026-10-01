@@ -1,8 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NekoChat v2.8.13 — Clean CLI chat client for several LLM services
+NekoChat v2.8.14 — Clean CLI chat client for several LLM services
 (the file is still named pollenchat.py)
+
+Changes in v2.8.14:
+  - System prompt layers. [system] sets the GLOBAL prompt (as before, shared by
+    every session). New [system session] sets a prompt for the CURRENT session
+    only. What is sent is the global prompt, a blank line, then the session
+    prompt, as ONE system message. The session prompt is stored in the session
+    file ("session_prompt") and follows [rename], [delete] and [save]; [new]
+    starts without one. [sessions] marks sessions that have one. [export] and
+    [token] use what is actually sent.
+  - The "system_prompt" field that used to be copied into every session file
+    was only a snapshot of the global setting and is no longer written or
+    read. [load] no longer overwrites the global system prompt with it (the
+    same rule as the user name since v2.8.12); it restores the session prompt.
+  - [system], [system session] and [long] share one block reader:
+      * a pasted burst is read whole before it is judged: [end] ends the block
+        only as the last line of a burst (or typed alone) and [reset] only when
+        it is alone; elsewhere they stay ordinary text, with a notice. The rest
+        of a paste is no longer sent to the AI as a chat message;
+      * lines arriving within 0.3s after [end] are dropped and reported;
+      * lines typed in the block are removed from the readline history;
+      * Ctrl+D cancels instead of applying half-typed text; [system] and
+        [system session] show a preview and ask "Apply? (Y/n)" first, and the
+        first line's indentation is kept.
+    Pastes that arrive in pieces more than 0.3s apart can still leak.
+  - [system <anything else>] prints the usage instead of going to the AI.
 
 Changes in v2.8.13:
   - Works with more than PollinationsAI. Built in: PollinationsAI (anonymous
@@ -455,7 +480,7 @@ BANNER = r"""
   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
 /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
-                                          v2.8.13
+                                          v2.8.14
         Clean & Harmless — Multi-service LLM chat
 """
 
@@ -463,9 +488,11 @@ BANNER = r"""
 _sessions: dict[str, list[dict[str, str]]] = {"default": []}
 _current_session: str = "default"
 _session_last_text: dict[str, str] = {}
+_session_prompts: dict[str, str] = {}   # per-session layer, added after the global one
 
 current_model: str = "openai"
-_system_prompt: str = "You are a helpful assistant."
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+_system_prompt: str = DEFAULT_SYSTEM_PROMPT   # global layer
 _temperature: float = 0.7
 _max_tokens: Optional[int] = None
 _stream_mode: bool = False  # default batch mode: safer on browser terminals
@@ -573,13 +600,15 @@ def _held_back_len(text: str) -> int:
     return 0
 
 
-def _pending_lines() -> list[str]:
+def _pending_lines(wait: float = 0.1, eof_out: Optional[list] = None) -> list[str]:
     """Return extra lines already waiting on stdin (i.e. pasted text).
 
     Terminal paste is far faster than typing, so if more input arrives within
     0.1s of the previous line it is treated as part of the same paste.
     POSIX only: Windows select() does not support stdin, so nothing is
     detected there (Windows paste behaviour is less prone to this issue).
+    If stdin hits EOF while draining, True is appended to `eof_out` (when given) so
+    the caller can tell Ctrl+D apart from "no more lines".
     """
     extra: list[str] = []
     if os.name != "posix":
@@ -587,17 +616,120 @@ def _pending_lines() -> list[str]:
     import select
     try:
         while True:
-            readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+            readable, _, _ = select.select([sys.stdin], [], [], wait)
             if sys.stdin not in readable:
                 break
             try:
                 extra.append(input())
             except EOFError:
+                if eof_out is not None:
+                    eof_out.append(True)
                 break
     except (OSError, ValueError):
         pass
     return extra
 
+
+def _history_len() -> int:
+    try:
+        import readline
+        return readline.get_current_history_length()
+    except Exception:
+        return 0
+
+def _prune_history(start: int) -> None:
+    """Drop readline history entries added since `start` (lines typed into a block
+    must not come back with the up-arrow at the chat prompt)."""
+    try:
+        import readline
+        for i in range(readline.get_current_history_length(), start, -1):
+            readline.remove_history_item(i - 1)
+    except Exception:
+        pass
+
+LATE_LINES_WAIT = 0.3  # seconds to wait for stragglers after [end]
+
+def read_block(allow_reset: bool = False) -> tuple[list[str], str, int]:
+    """Read lines until [end] (used by [system], [system session] and [long]).
+
+    Returns (lines, status, literal) where status is "end", "reset" or "eof" and
+    `literal` counts [end]/[reset] lines that were kept as text.
+
+    Pasted text arrives as a burst of lines. A whole burst is read before it is
+    judged, so a command word inside pasted text is not acted on half-way (the
+    rest of the paste would otherwise leak into the chat as a message):
+      - [end] ends the block only as the LAST line of a burst (or typed alone);
+      - [reset] (when allowed) counts only when it is the only line of a burst;
+      - anywhere else they are kept as ordinary text and reported.
+    Lines arriving shortly after the end are dropped, never sent to the AI.
+    Lines typed here are removed from the readline history.
+    """
+    specials = {"[end]"} | ({"[reset]"} if allow_reset else set())
+    start = _history_len()
+    lines: list[str] = []
+    literal = 0
+    status = "eof"
+    late: list[str] = []
+    try:
+        while True:
+            try:
+                first = input()
+            except EOFError:
+                status = "eof"
+                break
+            eof_hit: list[bool] = []
+            burst = [first] + _pending_lines(eof_out=eof_hit)
+            if eof_hit:  # Ctrl+D arrived right behind the line
+                lines.extend(burst)
+                status = "eof"
+                break
+            tail = burst[-1].strip()
+            if tail == "[end]":
+                content, status = burst[:-1], "end"
+            elif allow_reset and len(burst) == 1 and tail == "[reset]":
+                content, status = [], "reset"
+            else:
+                content, status = burst, ""
+            kept = sum(1 for ln in content if ln.strip() in specials)
+            if kept:  # tell the user right away, while they can still type [end]
+                print(
+                    f"{Fore.YELLOW}[~] {kept} line(s) of [end]/[reset] inside pasted text were "
+                    f"kept as text. To finish, type [end] on its own line.{Style.RESET_ALL}"
+                )
+            literal += kept
+            lines.extend(content)
+            if status:
+                break
+        if status in ("end", "reset"):
+            late = _pending_lines(LATE_LINES_WAIT)
+    finally:
+        _prune_history(start)
+    if late:
+        print(
+            f"{Fore.YELLOW}[~] Discarded {len(late)} line(s) that arrived after [end] "
+            f"(first: {late[0][:40]!r}).{Style.RESET_ALL}"
+        )
+    return lines, status, literal
+
+def _join_block(lines: list[str]) -> str:
+    """Join lines; drop blank lines at both ends but keep the first line's indentation."""
+    i, j = 0, len(lines)
+    while i < j and not lines[i].strip():
+        i += 1
+    while j > i and not lines[j - 1].strip():
+        j -= 1
+    return "\n".join(lines[i:j]).rstrip()
+
+def _confirm_block(text: str, target: str) -> bool:
+    """Show a short preview of `text` and ask before applying it."""
+    n_lines = text.count("\n") + 1
+    print(f"\n{Fore.YELLOW}Received {n_lines} line(s), {len(text):,} characters:{Style.RESET_ALL}")
+    for ln in text.split("\n")[:3]:
+        print(f"  {ln[:80]}{'…' if len(ln) > 80 else ''}")
+    if n_lines > 3:
+        print(f"  … ({n_lines - 3} more line(s))")
+    answer = _ask(f"{Fore.CYAN}[+] Apply to {target}? (Y/n): {Style.RESET_ALL}").lower()
+    return answer in ("", "y", "yes")
 
 def _ask(prompt_text: str, multiline: bool = False) -> str:
     """Wrapper around input().
@@ -793,7 +925,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "NekoChat/2.8.13"}
+    headers = {"User-Agent": "NekoChat/2.8.14"}
     if spec.get("key_env"):
         key = get_api_key(provider)
         if not key:
@@ -1022,35 +1154,85 @@ def select_service() -> None:
     save_config(build_config())
 
 # ============ SYSTEM PROMPT ============
+def _effective_system_prompt(session: Optional[str] = None) -> str:
+    """What is actually sent: the global layer, then the session layer (blank line between)."""
+    name = session if session is not None else _current_session
+    parts = [p for p in (_system_prompt, _session_prompts.get(name, "")) if p and p.strip()]
+    return "\n\n".join(parts)
+
+def _clip(text: str, limit: int = 200) -> str:
+    one = text.replace("\n", " ⏎ ")
+    return one if len(one) <= limit else one[:limit] + "…"
+
+def _show_prompt_layers() -> None:
+    sess = _session_prompts.get(_current_session, "")
+    labels = ["Global:", f"Session [{_current_session}]:", "Sent to the AI:"]
+    w = max(len(x) for x in labels) + 2
+    print(f"\n{Fore.YELLOW}System prompt layers:{Style.RESET_ALL}")
+    print(f"  {labels[0]:<{w}}{_clip(_system_prompt) if _system_prompt else '(none)'}")
+    print(f"  {labels[1]:<{w}}{_clip(sess) if sess else '(none)'}")
+    print(f"  {labels[2]:<{w}}{len(_effective_system_prompt()):,} characters\n")
+
 def set_system_prompt() -> None:
+    """[system]: the GLOBAL layer (shared by every session)."""
     global _system_prompt
-    print(f"\n{Fore.YELLOW}Current system prompt:{Style.RESET_ALL}")
-    print(f"  {_system_prompt}\n")
+    _show_prompt_layers()
     print(
-        f"{Fore.CYAN}Enter new prompt. "
-        f"Type [end] to finish, [reset] for default:{Style.RESET_ALL}"
+        f"{Fore.CYAN}Enter the new GLOBAL prompt. "
+        f"Type [end] to finish, [reset] for the default:{Style.RESET_ALL}"
     )
-    lines = []
-    while True:
-        try:
-            line = input()
-        except EOFError:
-            break
-        if line.strip() == "[reset]":
-            _system_prompt = "You are a helpful assistant."
-            print(f"{Fore.GREEN}[OK] System prompt reset to default.{Style.RESET_ALL}")
-            save_config(build_config())
-            return
-        if line.strip() == "[end]":
-            break
-        lines.append(line)
-    joined = "\n".join(lines).strip()
-    if joined:
-        _system_prompt = joined
-        print(f"{Fore.GREEN}[OK] System prompt updated.{Style.RESET_ALL}")
+    lines, status, _ = read_block(allow_reset=True)
+    if status == "reset":
+        _system_prompt = DEFAULT_SYSTEM_PROMPT
+        print(f"{Fore.GREEN}[OK] Global system prompt reset to default.{Style.RESET_ALL}")
         save_config(build_config())
-    else:
+        return
+    if status == "eof":
+        print(f"{Fore.YELLOW}[~] Input ended (Ctrl+D); nothing changed.{Style.RESET_ALL}")
+        return
+    text = _join_block(lines)
+    if not text:
         print(f"{Fore.YELLOW}[~] Kept current prompt.{Style.RESET_ALL}")
+        return
+    if not _confirm_block(text, "the global system prompt"):
+        print(f"{Fore.YELLOW}[~] Cancelled; nothing changed.{Style.RESET_ALL}")
+        return
+    _system_prompt = text
+    save_config(build_config())
+    print(f"{Fore.GREEN}[OK] Global system prompt updated.{Style.RESET_ALL}")
+    _show_prompt_layers()
+
+def set_session_prompt() -> None:
+    """[system session]: a layer for the CURRENT session only, added after the global one."""
+    name = _current_session
+    _show_prompt_layers()
+    print(
+        f"{Fore.CYAN}Enter the prompt for session '{name}'. "
+        f"Type [end] to finish, [reset] to remove it:{Style.RESET_ALL}"
+    )
+    lines, status, _ = read_block(allow_reset=True)
+    if status == "reset":
+        if _session_prompts.pop(name, None) is not None:
+            _save_session_atomic(name)
+        print(
+            f"{Fore.GREEN}[OK] Session prompt removed; only the global prompt "
+            f"applies to '{name}'.{Style.RESET_ALL}"
+        )
+        return
+    if status == "eof":
+        print(f"{Fore.YELLOW}[~] Input ended (Ctrl+D); nothing changed.{Style.RESET_ALL}")
+        return
+    text = _join_block(lines)
+    if not text:
+        print(f"{Fore.YELLOW}[~] Kept current session prompt.{Style.RESET_ALL}")
+        return
+    if not _confirm_block(text, f"session '{name}'"):
+        print(f"{Fore.YELLOW}[~] Cancelled; nothing changed.{Style.RESET_ALL}")
+        return
+    _session_prompts[name] = text
+    _save_session_atomic(name)
+    print(f"{Fore.GREEN}[OK] Session prompt set for '{name}'.{Style.RESET_ALL}")
+    _show_prompt_layers()
 
 # ============ CONFIG (temperature / max_tokens) ============
 def _prompt_float(prompt_text: str, min_val: float, max_val: float) -> Optional[float]:
@@ -1245,12 +1427,13 @@ def _save_session_atomic(name: str) -> None:
     data = {
         "model": current_model,
         "username": username,
-        "system_prompt": _system_prompt,
         "temperature": _temperature,
         "max_tokens": _max_tokens,
         "history": history,
         "saved_at": datetime.datetime.now().isoformat(),
     }
+    if _session_prompts.get(name):
+        data["session_prompt"] = _session_prompts[name]
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1261,6 +1444,7 @@ def _save_session_atomic(name: str) -> None:
 def _auto_load_all_sessions() -> None:
     global _sessions, _current_session
     _sessions = {}
+    _session_prompts.clear()
     files = sorted(f for f in os.listdir(SESSION_DIR) if f.endswith(".json"))
     loaded_any = False
     for fname in files:
@@ -1273,6 +1457,9 @@ def _auto_load_all_sessions() -> None:
                 _stamp_names(history, data.get("username") if isinstance(data, dict) else None)
                 name = fname[:-5]
                 _sessions[name] = history
+                sp = data.get("session_prompt") if isinstance(data, dict) else None
+                if isinstance(sp, str) and sp.strip():
+                    _session_prompts[name] = sp
                 loaded_any = True
             else:
                 print(
@@ -1306,7 +1493,8 @@ def list_sessions() -> None:
         if len(flow) > 4:
             flow = ["…"] + flow[-4:]
         who = f"  {Fore.CYAN}{' → '.join(flow)}{Style.RESET_ALL}" if flow else ""
-        print(f"  [{marker}] {i}. {name} ({count} messages){who}")
+        has_sp = f"  {Fore.MAGENTA}[+prompt]{Style.RESET_ALL}" if _session_prompts.get(name) else ""
+        print(f"  [{marker}] {i}. {name} ({count} messages){has_sp}{who}")
     print()
 
 def switch_session() -> None:
@@ -1372,6 +1560,8 @@ def rename_session() -> None:
         return
     _sessions[new] = _sessions.pop(old)
     _session_last_text[new] = _session_last_text.pop(old, "")
+    if old in _session_prompts:
+        _session_prompts[new] = _session_prompts.pop(old)
     _current_session = new
 
     # Save new session BEFORE removing old file so a crash won't lose data
@@ -1410,6 +1600,7 @@ def delete_session() -> None:
         return
     del _sessions[name]
     _session_last_text.pop(name, None)
+    _session_prompts.pop(name, None)
     # Also delete the file
     fname = _safe_session_name(name)
     path = os.path.join(SESSION_DIR, fname)
@@ -1455,7 +1646,7 @@ def send_chat(
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "NekoChat/2.8.13",
+        "User-Agent": "NekoChat/2.8.14",
         **auth_headers,
     }
 
@@ -1623,8 +1814,9 @@ def _trim_history(messages: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _build_messages_for_api(user_input: str) -> list[dict[str, str]]:
     msgs: list[dict[str, str]] = []
-    if _system_prompt:
-        msgs.append({"role": "system", "content": _system_prompt})
+    effective = _effective_system_prompt()
+    if effective:
+        msgs.append({"role": "system", "content": effective})
     # Only role/content go to the API; the local "name" field stays in the log
     msgs.extend(
         {"role": m["role"], "content": m["content"]} for m in _sessions[_current_session]
@@ -1762,7 +1954,7 @@ def export_session() -> None:
         fname = f"export_{ts}.md"
 
     include_system = False
-    if _system_prompt:
+    if _effective_system_prompt():
         sp_choice = _ask(
             f"{Fore.CYAN}[+] Include system prompt in export? y/N: {Style.RESET_ALL}"
         ).lower()
@@ -1773,7 +1965,7 @@ def export_session() -> None:
     lines.append(f"- **Model:** {current_model}\n")
     lines.append(f"- **Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     if include_system:
-        lines.append(f"- **System Prompt:** {_system_prompt}\n")
+        lines.append(f"- **System Prompt:** {_effective_system_prompt()}\n")
     lines.append("\n---\n")
 
     for msg in _sessions[_current_session]:
@@ -2079,7 +2271,7 @@ def undo_last() -> None:
 
 # ============ TOKEN ESTIMATE ============
 def estimate_tokens() -> None:
-    all_text = _system_prompt + "".join(m["content"] for m in _sessions[_current_session])
+    all_text = _effective_system_prompt() + "".join(m["content"] for m in _sessions[_current_session])
     total_chars = len(all_text)
     ascii_chars = sum(1 for c in all_text if ord(c) < 128)
     non_ascii_chars = total_chars - ascii_chars
@@ -2226,15 +2418,7 @@ def read_multiline() -> str:
         f"{Fore.CYAN}[+] Multiline mode. "
         f"Type [end] on its own line to finish:{Style.RESET_ALL}"
     )
-    lines = []
-    while True:
-        try:
-            line = input()
-        except EOFError:
-            break
-        if line.strip() == "[end]":
-            break
-        lines.append(line)
+    lines, _status, _literal = read_block(allow_reset=False)
     return "\n".join(lines)
 
 # ============ SEARCH ============
@@ -2282,12 +2466,16 @@ def save_session() -> None:
     # Assign first: _save_session_atomic() reads _sessions[name]
     if name != _current_session:
         _sessions[name] = list(_sessions[_current_session])
+        if _session_prompts.get(_current_session):
+            _session_prompts[name] = _session_prompts[_current_session]
+        else:
+            _session_prompts.pop(name, None)
     _save_session_atomic(name)  # atomic write for crash safety
     print(f"{Fore.GREEN}[OK] Session saved: {path}{Style.RESET_ALL}")
 
 def load_session() -> None:
     global _last_assistant_text, _current_session
-    global current_model, _system_prompt, _temperature, _max_tokens
+    global current_model, _temperature, _max_tokens
 
     files = sorted(f for f in os.listdir(SESSION_DIR) if f.endswith(".json"))
     if not files:
@@ -2334,9 +2522,13 @@ def load_session() -> None:
     model = data.get("model")
     if isinstance(model, str) and model:
         current_model = model
-    sp = data.get("system_prompt")
-    if isinstance(sp, str):
-        _system_prompt = sp
+    # The global system prompt is a setting, not session data: [load] leaves it alone
+    # (like the user name since v2.8.12). Only the session's own layer is restored.
+    sp = data.get("session_prompt")
+    if isinstance(sp, str) and sp.strip():
+        _session_prompts[name] = sp
+    else:
+        _session_prompts.pop(name, None)
     temp = data.get("temperature")
     if isinstance(temp, (int, float)):
         _temperature = float(temp)
@@ -2366,7 +2558,8 @@ NekoChat Commands:
   [service]     — Switch service (PollinationsAI, NVIDIA, Mistral, Cloudflare ...) and pick its model
   [model]       — Select a model of the current service
   [key]         — Set or remove API keys for services that need one
-  [system]      — Set or view the system prompt
+  [system]      — Set the GLOBAL system prompt (shared by every session)
+  [system session] — Set a prompt for the current session only (added after the global one)
   [name]        — Change your display name (past messages keep the name they were sent with)
   [config]      — Set temperature / max_tokens
   [stream]      — Toggle streaming / batch display mode (batch recommended on web terminals)
@@ -2474,6 +2667,14 @@ def main() -> None:
                 m_exp = _EXPORT_CMD_RE.match(user_input)
                 if m_exp:
                     export_exchanges(m_exp.group(1))
+                    continue
+                norm = " ".join(cmd.split())
+                if norm == "[system session]":
+                    set_session_prompt()
+                    continue
+                if norm.startswith("[system "):
+                    print(f"{Fore.YELLOW}[~] Usage: [system] (global prompt) or [system session] "
+                          f"(this session only).{Style.RESET_ALL}")
                     continue
                 if cmd.startswith("[name "):
                     print(f"{Fore.YELLOW}[~] [name] takes no arguments; just type [name].{Style.RESET_ALL}")

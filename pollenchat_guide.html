@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NekoChat v2.8.13 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.14 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>NekoChat v2.8.13</h1>
+  <h1>NekoChat v2.8.14</h1>
   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
@@ -349,21 +349,49 @@ a:hover { text-decoration: underline; }
 
 <section>
   <h2><span class="num">05</span> システムプロンプトの設定</h2>
-  <p><code>[system]</code> でAIの振る舞いを制御できます。</p>
+  <p>システムプロンプトは<strong>2つの層</strong>に分かれています。</p>
+  <table>
+    <tr><th>層</th><th>コマンド</th><th>保存先</th><th>効く範囲</th></tr>
+    <tr><td>全体</td><td><code>[system]</code></td><td><code>config.json</code></td><td>すべてのセッション</td></tr>
+    <tr><td>セッション</td><td><code>[system session]</code></td><td>そのセッションのファイル</td><td>今のセッションだけ</td></tr>
+  </table>
+  <p>AI に送られるのは、<strong>全体のプロンプト、空行、セッションのプロンプト</strong>の順に連結した、1つの system メッセージです。</p>
   <div class="terminal">
-<span class="prompt">Taro[default] :</span> <span class="cmd">[system]</span>
+<span class="prompt">Taro[default] :</span> <span class="cmd">[system session]</span>
 
-<span class="out">Current system prompt:</span>
-<span class="out">  You are a helpful assistant.</span>
+<span class="out">System prompt layers:</span>
+<span class="out">  Global:             You are a helpful assistant.</span>
+<span class="out">  Session [default]:  (none)</span>
+<span class="out">  Sent to the AI:     28 characters</span>
 
-<span class="prompt">[+]</span> <span class="out">Enter new prompt (empty line = keep, [reset] = default):</span>
-<span class="cmd">あなたは優秀なPythonプログラマーです。簡潔に回答してください。</span>
-<span class="cmd"></span>
-<span class="out">[OK] System prompt updated.</span>
+<span class="out">Enter the prompt for session 'default'. Type [end] to finish, [reset] to remove it:</span>
+<span class="cmd">このセッションでは、コードレビューだけを行う。</span>
+<span class="cmd">[end]</span>
+
+<span class="out">Received 1 line(s), 23 characters:</span>
+<span class="out">  このセッションでは、コードレビューだけを行う。</span>
+<span class="prompt">[+]</span> <span class="out">Apply to session 'default'? (Y/n): </span>
+<span class="out">[OK] Session prompt set for 'default'.</span>
   </div>
-  <div class="tip">
-    <code>[reset]</code> と力するとデフォルトのシステムプロンプトに戻ります。
-  </div>
+  <ul>
+    <li><code>[system]</code> も同じ形式で、<strong>全体の層</strong>を変更します（<code>[reset]</code> で初期の文言に戻ります）。</li>
+    <li><code>[system session]</code> の <code>[reset]</code> は、<strong>セッションの層を消して</strong>、全体の層だけに戻します。</li>
+    <li>どちらも、確定の前にプレビューを表示して <code>Apply? (Y/n)</code> と聞きます。Enter だけなら確定、<code>n</code> で取り消しです。Ctrl+D や Ctrl+C でも、変更せずに取り消せます。</li>
+    <li>変更は<strong>次の送信から</strong>効きます。過去の応答は履歴に残るので、前の指示の口調が残ることがあります。きっぱり切り替えたいときは、<code>[new]</code> で新しいセッションを作ってください。</li>
+    <li><code>[sessions]</code> の一覧では、セッションのプロンプトがあるセッションに <code>[+prompt]</code> が付きます。</li>
+    <li><code>[new]</code> で作ったセッションは、セッションのプロンプトなしで始まります。<code>[rename]</code>・<code>[delete]</code>・<code>[save]</code> では、セッションのプロンプトも一緒に動きます。<code>[export]</code> と <code>[token]</code> は、実際に送られる内容で計算します。</li>
+    <li>旧式の <code>[load]</code> は、ファイルにあるセッションのプロンプトを戻しますが、全体のプロンプトは書き換えません。</li>
+  </ul>
+
+  <h3>複数行の入力と貼り付け</h3>
+  <p><code>[system]</code>、<code>[system session]</code>、<code>[long]</code> は、単独の行の <code>[end]</code> まで、複数行を読みます。</p>
+  <ul>
+    <li><strong>貼り付けは、まとまり全体を読んでから判断します。</strong> <code>[end]</code> が終了の合図になるのは、貼り付けの<strong>最後の行</strong>にあるとき（または手で単独で打ったとき）だけです。<code>[reset]</code> は、それだけの行のときだけ有効です。貼り付けの途中にあるときは、<strong>ふつうの文章として残し</strong>、その旨を表示します。そのあとで、<code>[end]</code> を自分で入力してください。</li>
+    <li><code>[end]</code> のあと0.3秒以内に届いた行は、AI へは送らず、捨てて報告します。ただし、0.3秒を超える間隔で、細切れに届く貼り付け（遅い SSH など）では、漏れることがあります。</li>
+    <li>入力した行は、上矢印の履歴には残りません。</li>
+    <li>貼り付けの検出は、時間に頼っていて、POSIX の端末（Linux、macOS、Termux）で働きます。Windows では、これまでどおり1行ずつ読みます。</li>
+    <li><code>[system ほかの文字]</code> と入力すると、使い方が表示されます（AI には送られません）。</li>
+  </ul>
 </section>
 
 <section>
@@ -576,9 +604,9 @@ a:hover { text-decoration: underline; }
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[new]</span>
 <span class="cmd">work</span>
-<span class="prompt">Taro[work] :</span> <span class="cmd">[system]</span>
+<span class="prompt">Taro[work] :</span> <span class="cmd">[system session]</span>
 <span class="cmd">あなたは優秀な技術顧問です。</span>
-<span class="cmd"></span>
+<span class="cmd">[end]</span>
 <span class="prompt">Taro[work] :</span> <span class="cmd">API設計のベストプラクティスを教えて</span>
 
 <span class="prompt">Taro[work] :</span> <span class="cmd">[switch]</span>
@@ -614,7 +642,8 @@ a:hover { text-decoration: underline; }
     <tr><td><code>[service]</code></td><td>サービスを切り替え（キー入力→モデル選択まで）</td></tr>
     <tr><td><code>[model]</code></td><td>今のサービスのモデルを切り替え</td></tr>
     <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
-    <tr><td><code>[system]</code></td><td>システムプロンプトを設定</td></tr>
+    <tr><td><code>[system]</code></td><td>全体のシステムプロンプトを設定（全セッション共通）</td></tr>
+    <tr><td><code>[system session]</code></td><td>今のセッションだけのシステムプロンプトを設定</td></tr>
     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>
     <tr><td><code>[image]</code></td><td>画像生成モード</td></tr>
