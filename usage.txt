@@ -3,6 +3,7 @@
 [key]        — APIキーの設定・削除（入力は非表示、keys.json に保存も可）
 [system]     — 全体のシステムプロンプト設定（全セッション共通。複数行入力可、[end]で確定 / [reset]でデフォルトに戻す）
 [system session] — 今のセッションだけのシステムプロンプト（全体の後ろに足される。[reset]で削除）
+[plugin]     — 定型プロンプト（プラグイン）。[plugin] 一覧 / [plugin show 名前] / [plugin on 名前 [global]] 付ける / [plugin off 名前] 外す / [plugin new 名前] 作る
 [config]     — temperature / max_tokens
 [stream]     — ストリーミングON/OFF
 [image]      — 画像生成（[size] / [seed] 対応、サイズは64〜4096）
@@ -30,4 +31,4 @@
 [exit]       — 終了（全セッション自動保存）
 
 ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
-※ v2.8.14〜
+※ v2.8.15〜

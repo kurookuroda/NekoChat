@@ -1,4 +1,4 @@
-# NekoChat v2.8.14
+# NekoChat v2.8.15
 
 A clean, harmless CLI chat client for several LLM services.
 
@@ -9,6 +9,7 @@ NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat ap
 - **Multiple services** — Switch service with `[service]` and model with `[model]`; add your own OpenAI-compatible service in `config.json`
 - **API keys kept out of the way** — Set keys with `[key]`; they are stored only in `keys.json` (owner-only, git-ignored), never in configs, sessions or exports
 - **Streaming & batch modes** — Toggle live token-by-token output or wait-for-complete display
+- **Plugins** — Reusable prompts saved as text files and attached to a session or to every session with `[plugin]`, optionally with their own temperature / max_tokens / model
 - **System prompt layers** — A global prompt with `[system]` and an optional prompt for just the current session with `[system session]`
 - **Temperature / max_tokens control** — Fine-tune generation parameters with `[config]`
 - **Image generation** — Generate images from text prompts inside `[image]` mode, with configurable size and seed
@@ -110,6 +111,7 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
 | `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
 | `[system]` | Set the **global** system prompt, shared by every session (multi-line, `[end]` to finish, `[reset]` for default) |
 | `[system session]` | Set a system prompt for the **current session only**; it is added after the global one (`[reset]` removes it) |
+| `[plugin]` | Reusable prompts: `[plugin]` lists, `[plugin show NAME]`, `[plugin on NAME [global]]`, `[plugin off NAME]`, `[plugin new NAME]` |
 | `[config]` | Set `temperature` / `max_tokens` |
 | `[stream]` | Toggle streaming / batch display mode |
 
@@ -172,7 +174,8 @@ NekoChat creates the following files and directories in its working folder:
 - `pollen_images/` — Generated images
 - `pollen_codes/` — Extracted code blocks
 - `pollen_exports/` — Exported Markdown conversations
-- `config.json` — User preferences (model, system prompt, username, optional `providers`, etc.)
+- `config.json` — User preferences (model, system prompt, username, optional `providers` and `plugins`, etc.)
+- `plugins/` — Plugin files (`NAME.txt`)
 - `keys.json` — API keys saved with `[key]` (owner-only; never commit it)
 
 ## Session Management Details
@@ -197,13 +200,48 @@ What is sent to the AI is the global prompt, a blank line, then the session prom
 
 `[load]` (legacy) restores a session's own prompt but no longer overwrites the global one.
 
+## Plugins
+
+A plugin is a named, reusable prompt kept as a plain text file in `plugins/NAME.txt`. Plugins are **data only**: no code and no URLs, so a plugin can add text to the system prompt and tweak a few settings, but it cannot change where your messages are sent.
+
+```
+description: Reviews code and lists problems by priority
+temperature: 0.2
+max_tokens: 1200
+model: some-model-id
+---
+You are an experienced code reviewer.
+List the problems you find, most important first.
+```
+
+- The header is flat `key: value` lines, ended by a `---` line. Keys: `description` (one line, shown in lists), `temperature` (0.0-2.0), `max_tokens`, `model`. All are optional; unknown keys are an error. A file without a header is simply the prompt text.
+- Names use `a-z`, `0-9`, `-` and `_` (up to 40 characters); the prompt text is limited to 20,000 characters.
+- `description` is for people only; it is never sent to the AI. Only the prompt text is.
+
+| Command | What it does |
+|---------|--------------|
+| `[plugin]` | List plugins (`[S]` attached to this session, `[G]` attached to every session) |
+| `[plugin show NAME]` | Show the header, settings and text |
+| `[plugin on NAME]` | Attach to the current session |
+| `[plugin on NAME global]` | Attach to every session |
+| `[plugin off NAME]` | Detach (the file stays in `plugins/`) |
+| `[plugin new NAME]` | Create a plugin (description, optional settings, then the text; finish with `[end]`) |
+
+**Attaching asks every time.** The screen shows the text length and a preview, and the settings the plugin would change (`temperature : 0.7 -> 0.2`, and which plugin it replaces). NekoChat remembers the file's SHA-256. If the file is edited later — or is missing or invalid — it is **not used** (one notice is shown) until you approve it again with `[plugin on NAME]`. Only names and hashes are stored: `plugins` in `config.json` for global ones, and in the session file for session ones.
+
+**What is sent to the AI** is one system message: the global prompt, the global plugins, the session prompt, then the session plugins (in the order they were attached), separated by blank lines.
+
+**Settings are applied on top, not saved.** While a plugin is attached, its `temperature`, `max_tokens` and `model` are used for requests; `config.json` is never rewritten, and detaching a plugin brings the old values back. Session plugins win over global ones, and later ones over earlier ones. `[config]`, `[model]`, `[system]` and the reply label show what is in effect. A plugin's `model` is a model ID of the **current service** only. When the service's model list is known and does not contain it, the override is ignored with a notice; if the list cannot be checked, it is applied.
+
+Plugin files are plain text, so you can copy them between machines. Treat a file you did not write like any other prompt: its text is sent to the AI service you use.
+
 ### Typing and pasting multi-line text
 
-`[system]`, `[system session]` and `[long]` read lines until `[end]` on its own line.
+`[system]`, `[system session]`, `[plugin new]` and `[long]` read lines until `[end]` on its own line.
 
 - **Pasted text is read as a whole before it is judged.** `[end]` ends the input only as the last line of a paste (or when typed alone). `[reset]` counts only when it is alone on its line. If either appears elsewhere inside pasted text it is kept as ordinary text and a notice is shown; type `[end]` yourself afterwards.
 - Lines that arrive within 0.3 s after `[end]` are discarded and reported, never sent to the AI. A paste that reaches the terminal in pieces more than 0.3 s apart (for example over a slow SSH link) can still leak.
-- `[system]` and `[system session]` show a preview (line and character counts, first lines) and ask `Apply? (Y/n)`; the first line's indentation is kept. Ctrl+D cancels instead of applying half-typed text; Ctrl+C cancels as before.
+- `[system]` and `[system session]` show a preview (line and character counts, first lines) and ask `Apply? (Y/n)`; the first line's indentation is kept. Ctrl+D cancels instead of applying half-typed text (also when it is typed right after a line); Ctrl+C cancels as before.
 - The lines typed here are removed from the up-arrow history.
 - Paste detection relies on timing and works on POSIX terminals (Linux, macOS, Termux). On Windows lines are read one at a time, as before.
 - `[system <something else>]` prints the usage instead of being sent to the AI.
@@ -236,7 +274,7 @@ This is only an approximation. Actual token counts depend on the model's tokeniz
 - Image generation (`[image]`) always uses PollinationsAI's image endpoint, whichever chat service is selected, and may be affected by the same availability issues.
 - The `max_tokens` parameter is optional; if unset, the server default is used.
 - Image generation parameters (width, height, seed) are session-only and not persisted to `config.json`.
-- Session files store model, username, temperature, max_tokens, conversation history, and the session's own system prompt (`session_prompt`, only if set). The global system prompt lives in `config.json`; older session files may still contain a `system_prompt` field, which is ignored.
+- Session files store model, username, temperature, max_tokens, conversation history, the session's own system prompt (`session_prompt`, only if set) and its attached plugins (`plugins`: names and hashes, only if any). The global system prompt lives in `config.json`; older session files may still contain a `system_prompt` field, which is ignored.
 
 ## License
 

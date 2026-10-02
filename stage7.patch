@@ -1,0 +1,1210 @@
+diff --git a/README.md b/README.md
+index e80d0e8..84a35b6 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# NekoChat v2.8.14
++# NekoChat v2.8.15
+ 
+ A clean, harmless CLI chat client for several LLM services.
+ 
+@@ -9,6 +9,7 @@ NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat ap
+ - **Multiple services** — Switch service with `[service]` and model with `[model]`; add your own OpenAI-compatible service in `config.json`
+ - **API keys kept out of the way** — Set keys with `[key]`; they are stored only in `keys.json` (owner-only, git-ignored), never in configs, sessions or exports
+ - **Streaming & batch modes** — Toggle live token-by-token output or wait-for-complete display
++- **Plugins** — Reusable prompts saved as text files and attached to a session or to every session with `[plugin]`, optionally with their own temperature / max_tokens / model
+ - **System prompt layers** — A global prompt with `[system]` and an optional prompt for just the current session with `[system session]`
+ - **Temperature / max_tokens control** — Fine-tune generation parameters with `[config]`
+ - **Image generation** — Generate images from text prompts inside `[image]` mode, with configurable size and seed
+@@ -110,6 +111,7 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
+ | `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
+ | `[system]` | Set the **global** system prompt, shared by every session (multi-line, `[end]` to finish, `[reset]` for default) |
+ | `[system session]` | Set a system prompt for the **current session only**; it is added after the global one (`[reset]` removes it) |
++| `[plugin]` | Reusable prompts: `[plugin]` lists, `[plugin show NAME]`, `[plugin on NAME [global]]`, `[plugin off NAME]`, `[plugin new NAME]` |
+ | `[config]` | Set `temperature` / `max_tokens` |
+ | `[stream]` | Toggle streaming / batch display mode |
+ 
+@@ -172,7 +174,8 @@ NekoChat creates the following files and directories in its working folder:
+ - `pollen_images/` — Generated images
+ - `pollen_codes/` — Extracted code blocks
+ - `pollen_exports/` — Exported Markdown conversations
+-- `config.json` — User preferences (model, system prompt, username, optional `providers`, etc.)
++- `config.json` — User preferences (model, system prompt, username, optional `providers` and `plugins`, etc.)
++- `plugins/` — Plugin files (`NAME.txt`)
+ - `keys.json` — API keys saved with `[key]` (owner-only; never commit it)
+ 
+ ## Session Management Details
+@@ -197,13 +200,48 @@ What is sent to the AI is the global prompt, a blank line, then the session prom
+ 
+ `[load]` (legacy) restores a session's own prompt but no longer overwrites the global one.
+ 
++## Plugins
++
++A plugin is a named, reusable prompt kept as a plain text file in `plugins/NAME.txt`. Plugins are **data only**: no code and no URLs, so a plugin can add text to the system prompt and tweak a few settings, but it cannot change where your messages are sent.
++
++```
++description: Reviews code and lists problems by priority
++temperature: 0.2
++max_tokens: 1200
++model: some-model-id
++---
++You are an experienced code reviewer.
++List the problems you find, most important first.
++```
++
++- The header is flat `key: value` lines, ended by a `---` line. Keys: `description` (one line, shown in lists), `temperature` (0.0-2.0), `max_tokens`, `model`. All are optional; unknown keys are an error. A file without a header is simply the prompt text.
++- Names use `a-z`, `0-9`, `-` and `_` (up to 40 characters); the prompt text is limited to 20,000 characters.
++- `description` is for people only; it is never sent to the AI. Only the prompt text is.
++
++| Command | What it does |
++|---------|--------------|
++| `[plugin]` | List plugins (`[S]` attached to this session, `[G]` attached to every session) |
++| `[plugin show NAME]` | Show the header, settings and text |
++| `[plugin on NAME]` | Attach to the current session |
++| `[plugin on NAME global]` | Attach to every session |
++| `[plugin off NAME]` | Detach (the file stays in `plugins/`) |
++| `[plugin new NAME]` | Create a plugin (description, optional settings, then the text; finish with `[end]`) |
++
++**Attaching asks every time.** The screen shows the text length and a preview, and the settings the plugin would change (`temperature : 0.7 -> 0.2`, and which plugin it replaces). NekoChat remembers the file's SHA-256. If the file is edited later — or is missing or invalid — it is **not used** (one notice is shown) until you approve it again with `[plugin on NAME]`. Only names and hashes are stored: `plugins` in `config.json` for global ones, and in the session file for session ones.
++
++**What is sent to the AI** is one system message: the global prompt, the global plugins, the session prompt, then the session plugins (in the order they were attached), separated by blank lines.
++
++**Settings are applied on top, not saved.** While a plugin is attached, its `temperature`, `max_tokens` and `model` are used for requests; `config.json` is never rewritten, and detaching a plugin brings the old values back. Session plugins win over global ones, and later ones over earlier ones. `[config]`, `[model]`, `[system]` and the reply label show what is in effect. A plugin's `model` is a model ID of the **current service** only. When the service's model list is known and does not contain it, the override is ignored with a notice; if the list cannot be checked, it is applied.
++
++Plugin files are plain text, so you can copy them between machines. Treat a file you did not write like any other prompt: its text is sent to the AI service you use.
++
+ ### Typing and pasting multi-line text
+ 
+-`[system]`, `[system session]` and `[long]` read lines until `[end]` on its own line.
++`[system]`, `[system session]`, `[plugin new]` and `[long]` read lines until `[end]` on its own line.
+ 
+ - **Pasted text is read as a whole before it is judged.** `[end]` ends the input only as the last line of a paste (or when typed alone). `[reset]` counts only when it is alone on its line. If either appears elsewhere inside pasted text it is kept as ordinary text and a notice is shown; type `[end]` yourself afterwards.
+ - Lines that arrive within 0.3 s after `[end]` are discarded and reported, never sent to the AI. A paste that reaches the terminal in pieces more than 0.3 s apart (for example over a slow SSH link) can still leak.
+-- `[system]` and `[system session]` show a preview (line and character counts, first lines) and ask `Apply? (Y/n)`; the first line's indentation is kept. Ctrl+D cancels instead of applying half-typed text; Ctrl+C cancels as before.
++- `[system]` and `[system session]` show a preview (line and character counts, first lines) and ask `Apply? (Y/n)`; the first line's indentation is kept. Ctrl+D cancels instead of applying half-typed text (also when it is typed right after a line); Ctrl+C cancels as before.
+ - The lines typed here are removed from the up-arrow history.
+ - Paste detection relies on timing and works on POSIX terminals (Linux, macOS, Termux). On Windows lines are read one at a time, as before.
+ - `[system <something else>]` prints the usage instead of being sent to the AI.
+@@ -236,7 +274,7 @@ This is only an approximation. Actual token counts depend on the model's tokeniz
+ - Image generation (`[image]`) always uses PollinationsAI's image endpoint, whichever chat service is selected, and may be affected by the same availability issues.
+ - The `max_tokens` parameter is optional; if unset, the server default is used.
+ - Image generation parameters (width, height, seed) are session-only and not persisted to `config.json`.
+-- Session files store model, username, temperature, max_tokens, conversation history, and the session's own system prompt (`session_prompt`, only if set). The global system prompt lives in `config.json`; older session files may still contain a `system_prompt` field, which is ignored.
++- Session files store model, username, temperature, max_tokens, conversation history, the session's own system prompt (`session_prompt`, only if set) and its attached plugins (`plugins`: names and hashes, only if any). The global system prompt lives in `config.json`; older session files may still contain a `system_prompt` field, which is ignored.
+ 
+ ## License
+ 
+diff --git a/pollenchat.py b/pollenchat.py
+index bd48180..01d63c0 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -1,9 +1,34 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+ """
+-NekoChat v2.8.14 — Clean CLI chat client for several LLM services
++NekoChat v2.8.15 — Clean CLI chat client for several LLM services
+ (the file is still named pollenchat.py)
+ 
++Changes in v2.8.15:
++  - Plugins: named, reusable prompts kept as plain text in plugins/NAME.txt
++    (flat "key: value" header with description / temperature / max_tokens /
++    model, a "---" line, then the prompt text; a file without a header is just
++    the text). Plugins are DATA ONLY - no code, no URLs.
++      [plugin]                  list ([S] = this session, [G] = every session)
++      [plugin show NAME]        header, settings and text
++      [plugin on NAME [global]] attach to this session / to every session
++      [plugin off NAME]         detach (the file is kept)
++      [plugin new NAME]         create one (description, optional settings, text)
++    Attaching shows what it adds and changes and asks for confirmation every
++    time. The file's SHA-256 is remembered (only names + hashes are stored:
++    "plugins" in config.json / in the session file); a plugin that was edited
++    since, or is missing or invalid, is NOT used (one notice) until it is
++    approved again with [plugin on NAME]. What is sent: global text, global
++    plugins, session text, session plugins (attach order), one system message.
++  - A plugin's temperature / max_tokens / model apply only while it is attached,
++    on top of config.json, which is never rewritten (session plugins beat global
++    ones, later beat earlier). "model" is an ID of the CURRENT service; if the
++    service's model list is known and lacks it, it is ignored with a notice.
++    [config], [model], [system] and the reply label show what is in effect.
++  - Fix: Ctrl+D typed right after a line in [system], [system session],
++    [plugin new] or [long] could hang the input (the terminal's EOF state was
++    lost when readline switched modes while checking for pasted lines).
++
+ Changes in v2.8.14:
+   - System prompt layers. [system] sets the GLOBAL prompt (as before, shared by
+     every session). New [system session] sets a prompt for the CURRENT session
+@@ -181,6 +206,7 @@ import sys
+ import json
+ import getpass
+ import copy
++import hashlib
+ import time
+ import re
+ import random
+@@ -443,6 +469,7 @@ SESSION_DIR = "sessions"
+ IMAGE_DIR = "pollen_images"
+ CODE_DIR = "pollen_codes"
+ EXPORT_DIR = "pollen_exports"
++PLUGIN_DIR = "plugins"
+ CONFIG_FILE = "config.json"
+ MAX_HISTORY = 20
+ IMPORT_MAX_BYTES = 200_000
+@@ -480,7 +507,7 @@ BANNER = r"""
+   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
+  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
+ /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
+-                                          v2.8.14
++                                          v2.8.15
+         Clean & Harmless — Multi-service LLM chat
+ """
+ 
+@@ -489,6 +516,9 @@ _sessions: dict[str, list[dict[str, str]]] = {"default": []}
+ _current_session: str = "default"
+ _session_last_text: dict[str, str] = {}
+ _session_prompts: dict[str, str] = {}   # per-session layer, added after the global one
++_plugins_global: list[dict[str, str]] = []              # [{"name", "sha256"}] used by every session
++_session_plugins: dict[str, list[dict[str, str]]] = {}  # same, per session
++_warned: set[str] = set()
+ 
+ current_model: str = "openai"
+ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+@@ -515,6 +545,7 @@ def ensure_dirs() -> None:
+     os.makedirs(IMAGE_DIR, exist_ok=True)
+     os.makedirs(CODE_DIR, exist_ok=True)
+     os.makedirs(EXPORT_DIR, exist_ok=True)
++    os.makedirs(PLUGIN_DIR, exist_ok=True)
+ 
+ def _safe_session_name(name: str) -> str:
+     name = os.path.basename(name.strip())
+@@ -600,6 +631,26 @@ def _held_back_len(text: str) -> int:
+     return 0
+ 
+ 
++def _stdin_at_eof() -> bool:
++    """True if stdin is readable only because of an end-of-input condition (no bytes queued).
++
++    A Ctrl+D typed right after a line leaves the terminal in canonical mode with an
++    "EOF pending" state: select() reports it readable, but readline's raw-mode input()
++    would block forever because switching modes drops that state. The state is consumed
++    here so it does not linger either."""
++    try:
++        import fcntl
++        import struct
++        import termios
++        fd = sys.stdin.fileno()
++        queued = struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, struct.pack("i", 0)))[0]
++        if queued == 0:
++            os.read(fd, 1)
++            return True
++    except Exception:
++        pass
++    return False
++
+ def _pending_lines(wait: float = 0.1, eof_out: Optional[list] = None) -> list[str]:
+     """Return extra lines already waiting on stdin (i.e. pasted text).
+ 
+@@ -619,6 +670,10 @@ def _pending_lines(wait: float = 0.1, eof_out: Optional[list] = None) -> list[st
+             readable, _, _ = select.select([sys.stdin], [], [], wait)
+             if sys.stdin not in readable:
+                 break
++            if _stdin_at_eof():
++                if eof_out is not None:
++                    eof_out.append(True)
++                break
+             try:
+                 extra.append(input())
+             except EOFError:
+@@ -810,6 +865,11 @@ def apply_config(cfg: dict) -> None:
+         current_model = cfg["model"]
+     if "providers" in cfg:
+         apply_providers_config(cfg["providers"])
++    if "plugins" in cfg:
++        cleaned = _clean_plugin_entries(cfg["plugins"])
++        if not isinstance(cfg["plugins"], list) or len(cleaned) != len(cfg["plugins"]):
++            _config_warnings.append("config.json: some 'plugins' entries were invalid and ignored.")
++        _plugins_global[:] = cleaned
+     if "system_prompt" in cfg and isinstance(cfg["system_prompt"], str):
+         _system_prompt = cfg["system_prompt"]
+     if "username" in cfg and isinstance(cfg["username"], str):
+@@ -835,6 +895,8 @@ def build_config() -> dict:
+     }
+     if _providers_cfg:  # only written when the user has customised services
+         cfg["providers"] = _providers_cfg
++    if _plugins_global:
++        cfg["plugins"] = _plugins_global
+     return cfg
+ 
+ # ============ MARKDOWN RENDERER ============
+@@ -925,7 +987,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+     cached = _models_cache.get(provider)
+     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+         return cached[1]
+-    headers = {"User-Agent": "NekoChat/2.8.14"}
++    headers = {"User-Agent": "NekoChat/2.8.15"}
+     if spec.get("key_env"):
+         key = get_api_key(provider)
+         if not key:
+@@ -1007,6 +1069,10 @@ def _pick_model(provider: str) -> Optional[str]:
+ def select_model() -> None:
+     """[model]: choose a model within the current service."""
+     global current_model
++    eff = _effective_settings()
++    if "model" in eff["source"]:
++        print(f"{Fore.YELLOW}[~] Plugin '{eff['source']['model']}' sets the model to {eff['model']} while "
++              f"attached. The model you pick here is used when no plugin overrides it.{Style.RESET_ALL}")
+     provider, _ = split_model(current_model)
+     model = _pick_model(provider)
+     if model is None:
+@@ -1015,6 +1081,244 @@ def select_model() -> None:
+     print(f"{Fore.GREEN}[OK] Model set to: {current_model}{Style.RESET_ALL}")
+     save_config(build_config())
+ 
++# ============ PLUGIN COMMANDS ============
++PLUGIN_USAGE = (
++    "Usage: [plugin] | [plugin show NAME] | [plugin on NAME [global]] | "
++    "[plugin off NAME] | [plugin new NAME]"
++)
++
++def _fmt_setting(key: str, value: Any) -> str:
++    if key == "max_tokens" and value is None:
++        return "(server default)"
++    return str(value)
++
++def _attached_scope(name: str) -> Optional[str]:
++    if any(e["name"] == name for e in _session_plugins.get(_current_session, [])):
++        return "session"
++    if any(e["name"] == name for e in _plugins_global):
++        return "global"
++    return None
++
++def _plugin_entries(scope: str, create: bool = False) -> list[dict[str, str]]:
++    """The attached-plugin list of a level. Only `create=True` may add an empty session entry."""
++    if scope == "global":
++        return _plugins_global
++    if create:
++        return _session_plugins.setdefault(_current_session, [])
++    return _session_plugins.get(_current_session, [])
++
++def _plugin_save(scope: str) -> None:
++    if scope == "global":
++        save_config(build_config())
++    else:
++        if not _session_plugins.get(_current_session):
++            _session_plugins.pop(_current_session, None)
++        _save_session_atomic(_current_session)
++
++def _verify_plugin_model(model_id: str) -> str:
++    ids = fetch_models_for(split_model(current_model)[0])
++    if ids is None:
++        return "could not be checked against the service's model list"
++    if model_id in ids:
++        return "found in the service's model list"
++    return "NOT in the service's model list - it will be ignored while attached"
++
++def plugin_list() -> None:
++    names = list_plugin_names()
++    sess = {e["name"] for e in _session_plugins.get(_current_session, [])}
++    glob = {e["name"] for e in _plugins_global}
++    _, problems = _active_plugins()
++    bad = {(sc, n): why for sc, n, why in problems}
++    print(f"\n{Fore.YELLOW}Plugins ({PLUGIN_DIR}/):{Style.RESET_ALL}")
++    if not names and not sess and not glob:
++        print("  (none yet - create one with [plugin new NAME])")
++    for n in names:
++        mark = "S" if n in sess else ("G" if n in glob else " ")
++        try:
++            desc = load_plugin(n)["meta"].get("description", "")
++        except PluginError as ex:
++            desc = f"{Fore.RED}(invalid: {ex}){Style.RESET_ALL}"
++        scope = "session" if n in sess else ("global" if n in glob else "")
++        why = bad.get((scope, n))
++        warn = f"  {Fore.RED}NOT used: {why}{Style.RESET_ALL}" if why and "unusable" not in why else ""
++        print(f"  [{mark}] {n:<20} {desc}{warn}")
++    for scope, n, why in problems:
++        if n not in names:
++            print(f"  [{'S' if scope == 'session' else 'G'}] {n:<20} {Fore.RED}NOT used: {why}{Style.RESET_ALL}")
++    print(f"  [S] attached to session '{_current_session}'   [G] attached to every session\n")
++
++def plugin_show(name: str) -> None:
++    try:
++        p = load_plugin(name)
++    except PluginError as ex:
++        print(f"{Fore.RED}[!] Plugin '{name}': {ex}{Style.RESET_ALL}")
++        return
++    m = p["meta"]
++    scope = _attached_scope(name)
++    entry = next((e for e in _plugin_entries(scope) if e["name"] == name), None) if scope else None
++    if scope is None:
++        state = "not attached"
++    elif entry and entry["sha256"] != p["sha256"]:
++        state = f"attached to {scope}, but NOT used: the file changed since you approved it"
++    else:
++        state = f"attached to {scope}"
++    print(f"\n{Fore.YELLOW}Plugin '{name}'{Style.RESET_ALL}  ({state})")
++    print(f"  Description : {m.get('description', '(none)')}")
++    for key in ("temperature", "max_tokens", "model"):
++        if key in m:
++            print(f"  {key:<12}: {m[key]}")
++    print(f"  File        : {_plugin_path(name)}  ({len(p['body']):,} characters of prompt)\n")
++    body = p["body"]
++    print(body[:3000] + (f"\n… ({len(body) - 3000:,} more characters)" if len(body) > 3000 else ""))
++    print()
++
++def plugin_on(name: str, scope: str) -> None:
++    try:
++        p = load_plugin(name)
++    except PluginError as ex:
++        print(f"{Fore.RED}[!] Plugin '{name}': {ex}{Style.RESET_ALL}")
++        return
++    other = "global" if scope == "session" else "session"
++    if any(e["name"] == name for e in
++           (_plugins_global if other == "global" else _session_plugins.get(_current_session, []))):
++        print(f"{Fore.YELLOW}[~] '{name}' is already attached to the {other} level; "
++              f"remove it first with [plugin off {name}].{Style.RESET_ALL}")
++        return
++    entries = _plugin_entries(scope)
++    mine = next((e for e in entries if e["name"] == name), None)
++    if mine and mine["sha256"] == p["sha256"]:
++        print(f"{Fore.YELLOW}[~] '{name}' is already attached ({scope}).{Style.RESET_ALL}")
++        return
++
++    m = p["meta"]
++    target = "every session" if scope == "global" else f"session '{_current_session}'"
++    before = _effective_settings()
++    after = _effective_settings(extra={**p, "scope": scope})
++    print(f"\n{Fore.YELLOW}Plugin '{name}' -> {target}{Style.RESET_ALL}")
++    if m.get("description"):
++        print(f"  Description : {m['description']}")
++    print(f"  Prompt text : {len(p['body']):,} characters")
++    for ln in p["body"].split("\n")[:3]:
++        print(f"    {ln[:80]}{'…' if len(ln) > 80 else ''}")
++    rows: list[str] = []
++    for key in ("temperature", "max_tokens"):
++        if key in m:
++            src = before["source"].get(key)
++            rows.append(f"    {key:<12}: {_fmt_setting(key, before[key])} -> {_fmt_setting(key, m[key])}"
++                        + (f"   (replaces plugin '{src}')" if src else ""))
++    if "model" in m:
++        new_model = make_model_string(split_model(current_model)[0], m["model"])
++        src = before["source"].get("model")
++        rows.append(f"    {'model':<12}: {before['model']} -> {new_model}   [{_verify_plugin_model(m['model'])}]"
++                    + (f"   (replaces plugin '{src}')" if src else ""))
++    if rows:
++        print("  Settings it changes while attached (config.json is not modified):")
++        for r in rows:
++            print(r)
++    else:
++        print("  Settings    : none (prompt text only)")
++    if mine:
++        print(f"  {Fore.YELLOW}The file changed since you approved it.{Style.RESET_ALL}")
++    if _ask(f"{Fore.CYAN}[+] Attach? (Y/n): {Style.RESET_ALL}").lower() not in ("", "y", "yes"):
++        print(f"{Fore.YELLOW}[~] Cancelled; nothing attached.{Style.RESET_ALL}")
++        return
++    if mine:
++        mine["sha256"] = p["sha256"]
++    else:
++        _plugin_entries(scope, create=True).append({"name": name, "sha256": p["sha256"]})
++    _plugin_save(scope)
++    print(f"{Fore.GREEN}[OK] Plugin '{name}' attached to {target}.{Style.RESET_ALL}")
++    _show_prompt_layers()
++
++def plugin_off(name: str) -> None:
++    scope = _attached_scope(name)
++    if scope is None:
++        print(f"{Fore.YELLOW}[~] '{name}' is not attached.{Style.RESET_ALL}")
++        return
++    entries = _plugin_entries(scope)
++    entries[:] = [e for e in entries if e["name"] != name]
++    _plugin_save(scope)
++    print(f"{Fore.GREEN}[OK] Plugin '{name}' removed from the {scope} level "
++          f"(the file in {PLUGIN_DIR}/ is kept).{Style.RESET_ALL}")
++
++def plugin_new(name: str) -> None:
++    if not PLUGIN_NAME_RE.fullmatch(name):
++        print(f"{Fore.RED}[!] Invalid name. Use a-z, 0-9, '-' and '_' (at most 40 characters).{Style.RESET_ALL}")
++        return
++    path = _plugin_path(name)
++    if os.path.exists(path):
++        print(f"{Fore.RED}[!] {path} already exists.{Style.RESET_ALL}")
++        return
++    desc = _ask(f"{Fore.CYAN}[+] Description (one line, Enter=none): {Style.RESET_ALL}")
++    if len(desc) > 200:
++        print(f"{Fore.RED}[!] The description must be at most 200 characters.{Style.RESET_ALL}")
++        return
++    temperature = _prompt_float(
++        f"{Fore.CYAN}[+] temperature (Enter=skip, 0.0-2.0): {Style.RESET_ALL}", 0.0, 2.0)
++    max_tokens = _prompt_optional_int(f"{Fore.CYAN}[+] max_tokens (Enter=skip): {Style.RESET_ALL}")
++    model = _ask(f"{Fore.CYAN}[+] model (an ID of the current service, Enter=skip): {Style.RESET_ALL}")
++    if model and not re.fullmatch(r"\S{1,200}", model):
++        print(f"{Fore.RED}[!] A model ID has no spaces.{Style.RESET_ALL}")
++        return
++    print(f"{Fore.CYAN}Enter the prompt text. Type [end] to finish:{Style.RESET_ALL}")
++    lines, status, _ = read_block(allow_reset=False)
++    if status == "eof":
++        print(f"{Fore.YELLOW}[~] Input ended (Ctrl+D); nothing created.{Style.RESET_ALL}")
++        return
++    body = _join_block(lines)
++    if not body:
++        print(f"{Fore.YELLOW}[~] No text; nothing created.{Style.RESET_ALL}")
++        return
++    if len(body) > MAX_PLUGIN_BODY:
++        print(f"{Fore.RED}[!] The text is longer than {MAX_PLUGIN_BODY:,} characters.{Style.RESET_ALL}")
++        return
++    head = [f"name: {name}"]
++    if desc:
++        head.append(f"description: {desc}")
++    if temperature is not None:
++        head.append(f"temperature: {round(temperature, 2)}")
++    if max_tokens is not None and max_tokens != -1:
++        head.append(f"max_tokens: {max_tokens}")
++    if model:
++        head.append(f"model: {model}")
++    text = "\n".join(head) + "\n---\n" + body + "\n"
++    try:  # validate exactly what would be written
++        parse_plugin(text, name)
++    except PluginError as ex:
++        print(f"{Fore.RED}[!] {ex}{Style.RESET_ALL}")
++        return
++    if not _confirm_block(body, f"the new plugin file {path}"):
++        print(f"{Fore.YELLOW}[~] Cancelled; nothing created.{Style.RESET_ALL}")
++        return
++    try:
++        with open(path, "x", encoding="utf-8", newline="\n") as f:
++            f.write(text)
++    except OSError as e:
++        print(f"{Fore.RED}[!] Could not create {path}: {e}{Style.RESET_ALL}")
++        return
++    print(f"{Fore.GREEN}[OK] Created {path}. Attach it with [plugin on {name}].{Style.RESET_ALL}")
++
++def plugin_command(norm: str) -> None:
++    """Dispatch '[plugin ...]' (norm is the lower-cased, whitespace-normalised command)."""
++    if not norm.endswith("]"):
++        print(f"{Fore.YELLOW}[~] {PLUGIN_USAGE}{Style.RESET_ALL}")
++        return
++    args = norm[1:-1].split()[1:]
++    if not args or args == ["list"]:
++        plugin_list()
++    elif args[0] == "show" and len(args) == 2:
++        plugin_show(args[1])
++    elif args[0] == "on" and len(args) == 2:
++        plugin_on(args[1], "session")
++    elif args[0] == "on" and len(args) == 3 and args[2] == "global":
++        plugin_on(args[1], "global")
++    elif args[0] == "off" and len(args) == 2:
++        plugin_off(args[1])
++    elif args[0] == "new" and len(args) == 2:
++        plugin_new(args[1])
++    else:
++        print(f"{Fore.YELLOW}[~] {PLUGIN_USAGE}{Style.RESET_ALL}")
++
+ # ============ API KEY COMMAND ============
+ def set_key() -> None:
+     names = [n for n, sp in PROVIDERS.items() if sp.get("key_env")]
+@@ -1154,11 +1458,199 @@ def select_service() -> None:
+     save_config(build_config())
+ 
+ # ============ SYSTEM PROMPT ============
++# ============ PLUGINS ============
++# A plugin is a named, reusable prompt kept in plugins/NAME.txt:
++#     description: one line            (header: flat "key: value" lines)
++#     temperature: 0.2
++#     max_tokens: 1200
++#     model: some-model-id             (a model of the CURRENT service only)
++#     ---
++#     the prompt text ...
++# Plugins are data only. The text joins the system prompt; the optional settings are applied
++# at send time on top of config.json, which is never rewritten. Attaching asks for confirmation
++# and remembers the file's SHA-256; a file that changed since then is ignored until re-approved.
++PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
++PLUGIN_KEYS = ("name", "description", "temperature", "max_tokens", "model")
++MAX_PLUGIN_BODY = 20000
++
++class PluginError(Exception):
++    pass
++
++def _plugin_path(name: str) -> str:
++    return os.path.join(PLUGIN_DIR, f"{name}.txt")
++
++def _norm_text(text: str) -> str:
++    return text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
++
++def parse_plugin(text: str, stem: str) -> tuple[dict[str, Any], str]:
++    """Parse plugin text -> (meta, body). Strict: unknown keys and bad values are errors."""
++    lines = _norm_text(text).split("\n")
++    raw: dict[str, str] = {}
++    body_lines = lines
++    first = next((ln for ln in lines if ln.strip()), "")
++    if re.match(r"^[A-Za-z_]+\s*:", first) and any(ln.strip() == "---" for ln in lines):
++        end = next(i for i, ln in enumerate(lines) if ln.strip() == "---")
++        for ln in lines[:end]:
++            if not ln.strip():
++                continue
++            key, sep, val = ln.partition(":")
++            key = key.strip().lower()
++            if not sep or not re.fullmatch(r"[a-z_]+", key):
++                raise PluginError(f"bad header line {ln[:40]!r}")
++            if key not in PLUGIN_KEYS:
++                raise PluginError(f"unknown header key '{key}' (allowed: {', '.join(PLUGIN_KEYS)})")
++            if key in raw:
++                raise PluginError(f"duplicate header key '{key}'")
++            raw[key] = val.strip()
++        body_lines = lines[end + 1:]
++    if "name" in raw and raw["name"] != stem:
++        raise PluginError(f"header name '{raw['name']}' differs from the file name '{stem}'")
++    meta: dict[str, Any] = {"name": stem}
++    desc = raw.get("description", "")
++    if len(desc) > 200:
++        raise PluginError("description is longer than 200 characters")
++    if desc:
++        meta["description"] = desc
++    for key in ("temperature", "max_tokens", "model"):
++        if key in raw and not raw[key]:
++            raise PluginError(f"'{key}' has no value")
++    if "temperature" in raw:
++        try:
++            t = float(raw["temperature"])
++        except ValueError:
++            raise PluginError("temperature must be a number") from None
++        if not (0.0 <= t <= 2.0):
++            raise PluginError("temperature must be between 0.0 and 2.0")
++        meta["temperature"] = t
++    if "max_tokens" in raw:
++        try:
++            m = int(raw["max_tokens"])
++        except ValueError:
++            raise PluginError("max_tokens must be a whole number") from None
++        if not (1 <= m <= 1_000_000):
++            raise PluginError("max_tokens must be between 1 and 1000000")
++        meta["max_tokens"] = m
++    if "model" in raw:
++        if not re.fullmatch(r"\S{1,200}", raw["model"]):
++            raise PluginError("model must be a single model ID without spaces")
++        meta["model"] = raw["model"]
++    body = _join_block(body_lines)
++    if not body:
++        raise PluginError("there is no prompt text")
++    if len(body) > MAX_PLUGIN_BODY:
++        raise PluginError(f"the prompt text is longer than {MAX_PLUGIN_BODY:,} characters")
++    return meta, body
++
++def load_plugin(name: str) -> dict[str, Any]:
++    if not PLUGIN_NAME_RE.fullmatch(name):
++        raise PluginError("invalid plugin name (use a-z, 0-9, '-' and '_'; at most 40 characters)")
++    try:
++        with open(_plugin_path(name), "r", encoding="utf-8") as f:
++            raw = f.read()
++    except FileNotFoundError:
++        raise PluginError("file not found") from None
++    except (OSError, UnicodeDecodeError) as e:
++        raise PluginError(f"cannot read the file ({e})") from None
++    text = _norm_text(raw)
++    meta, body = parse_plugin(text, name)
++    return {"name": name, "meta": meta, "body": body,
++            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
++
++def list_plugin_names() -> list[str]:
++    try:
++        files = os.listdir(PLUGIN_DIR)
++    except OSError:
++        return []
++    return sorted(f[:-4] for f in files if f.endswith(".txt") and PLUGIN_NAME_RE.fullmatch(f[:-4]))
++
++def _clean_plugin_entries(raw: object) -> list[dict[str, str]]:
++    """Validate the attached-plugin list read from config.json / a session file."""
++    out: list[dict[str, str]] = []
++    seen: set[str] = set()
++    if not isinstance(raw, list):
++        return out
++    for e in raw:
++        if (isinstance(e, dict) and isinstance(e.get("name"), str) and isinstance(e.get("sha256"), str)
++                and PLUGIN_NAME_RE.fullmatch(e["name"]) and re.fullmatch(r"[0-9a-f]{64}", e["sha256"])
++                and e["name"] not in seen):
++            seen.add(e["name"])
++            out.append({"name": e["name"], "sha256": e["sha256"]})
++    return out
++
++def _active_plugins(
++    session: Optional[str] = None, extra: Optional[dict[str, Any]] = None
++) -> tuple[list[dict[str, Any]], list[tuple[str, str, str]]]:
++    """Plugins that are in use now, in application order (global ones, then the session's).
++
++    Returns (active, problems); problems are (scope, name, reason) for attached plugins that
++    are missing, invalid, or changed since they were approved. `extra` (an already loaded
++    plugin plus "scope") is added as if attached - used to preview a change.
++    """
++    sname = session if session is not None else _current_session
++    active: list[dict[str, Any]] = []
++    problems: list[tuple[str, str, str]] = []
++    seen: set[str] = set()
++    for scope, entries in (("global", _plugins_global), ("session", _session_plugins.get(sname, []))):
++        for e in entries:
++            if e["name"] in seen or (extra is not None and e["name"] == extra["name"]):
++                continue
++            seen.add(e["name"])
++            try:
++                p = load_plugin(e["name"])
++            except PluginError as ex:
++                problems.append((scope, e["name"], f"unusable ({ex})"))
++                continue
++            if p["sha256"] != e["sha256"]:
++                problems.append((scope, e["name"],
++                                 f"changed since you approved it; re-approve with [plugin on {e['name']}]"))
++                continue
++            active.append({**p, "scope": scope})
++        if extra is not None and extra["scope"] == scope and extra["name"] not in seen:
++            seen.add(extra["name"])
++            active.append(extra)
++    return active, problems
++
++def _effective_settings(
++    session: Optional[str] = None, extra: Optional[dict[str, Any]] = None
++) -> dict[str, Any]:
++    """Settings used for a request: config.json values with plugin overrides on top.
++    Later plugins win (the session's after the global ones). Nothing here is saved."""
++    active, _ = _active_plugins(session, extra)
++    provider = split_model(current_model)[0]
++    cached = _models_cache.get(provider)
++    st: dict[str, Any] = {"temperature": _temperature, "max_tokens": _max_tokens, "model": current_model}
++    source: dict[str, str] = {}
++    skipped: list[tuple[str, str]] = []
++    for p in active:
++        m = p["meta"]
++        if "temperature" in m:
++            st["temperature"], source["temperature"] = m["temperature"], p["name"]
++        if "max_tokens" in m:
++            st["max_tokens"], source["max_tokens"] = m["max_tokens"], p["name"]
++        if "model" in m:
++            if cached and m["model"] not in cached[1]:   # known not to exist in this service
++                skipped.append((p["name"], m["model"]))
++                continue
++            st["model"], source["model"] = make_model_string(provider, m["model"]), p["name"]
++    st["source"] = source
++    st["skipped_models"] = skipped
++    return st
++
++def _warn_once(key: str, msg: str) -> None:
++    if key not in _warned:
++        _warned.add(key)
++        print(f"{Fore.YELLOW}[~] {msg}{Style.RESET_ALL}")
++
+ def _effective_system_prompt(session: Optional[str] = None) -> str:
+-    """What is actually sent: the global layer, then the session layer (blank line between)."""
++    """What is actually sent, as one message: global text, global plugins, session text,
++    session plugins - separated by blank lines."""
+     name = session if session is not None else _current_session
+-    parts = [p for p in (_system_prompt, _session_prompts.get(name, "")) if p and p.strip()]
+-    return "\n\n".join(parts)
++    active, _ = _active_plugins(name)
++    parts = [_system_prompt]
++    parts += [p["body"] for p in active if p["scope"] == "global"]
++    parts.append(_session_prompts.get(name, ""))
++    parts += [p["body"] for p in active if p["scope"] == "session"]
++    return "\n\n".join(x for x in parts if x and x.strip())
+ 
+ def _clip(text: str, limit: int = 200) -> str:
+     one = text.replace("\n", " ⏎ ")
+@@ -1166,12 +1658,25 @@ def _clip(text: str, limit: int = 200) -> str:
+ 
+ def _show_prompt_layers() -> None:
+     sess = _session_prompts.get(_current_session, "")
+-    labels = ["Global:", f"Session [{_current_session}]:", "Sent to the AI:"]
+-    w = max(len(x) for x in labels) + 2
++    active, problems = _active_plugins()
++
++    def plugin_names(scope: str) -> str:
++        used = [p["name"] for p in active if p["scope"] == scope]
++        bad = [f"{n} (NOT used)" for sc, n, _ in problems if sc == scope]
++        return ", ".join(used + bad)
++
++    rows = [("Global:", _clip(_system_prompt) if _system_prompt else "(none)")]
++    if plugin_names("global"):
++        rows.append(("Global plugins:", plugin_names("global")))
++    rows.append((f"Session [{_current_session}]:", _clip(sess) if sess else "(none)"))
++    if plugin_names("session"):
++        rows.append(("Session plugins:", plugin_names("session")))
++    rows.append(("Sent to the AI:", f"{len(_effective_system_prompt()):,} characters"))
++    w = max(len(label) for label, _ in rows) + 2
+     print(f"\n{Fore.YELLOW}System prompt layers:{Style.RESET_ALL}")
+-    print(f"  {labels[0]:<{w}}{_clip(_system_prompt) if _system_prompt else '(none)'}")
+-    print(f"  {labels[1]:<{w}}{_clip(sess) if sess else '(none)'}")
+-    print(f"  {labels[2]:<{w}}{len(_effective_system_prompt()):,} characters\n")
++    for label, value in rows:
++        print(f"  {label:<{w}}{value}")
++    print()
+ 
+ def set_system_prompt() -> None:
+     """[system]: the GLOBAL layer (shared by every session)."""
+@@ -1273,6 +1778,13 @@ def edit_config() -> None:
+     print(f"  temperature : {_temperature}")
+     mt = str(_max_tokens) if _max_tokens is not None else "(unset / server default)"
+     print(f"  max_tokens  : {mt}\n")
++    eff = _effective_settings()
++    if eff["source"]:
++        print(f"{Fore.MAGENTA}  Plugins currently override these while attached (not saved to config.json):{Style.RESET_ALL}")
++        for key in ("temperature", "max_tokens", "model"):
++            if key in eff["source"]:
++                print(f"    {key:<12}: {_fmt_setting(key, eff[key])}   (plugin '{eff['source'][key]}')")
++        print()
+ 
+     new_temp = _prompt_float(
+         f"{Fore.CYAN}[+] temperature (current: {_temperature}, Enter=keep, 0.0-2.0): {Style.RESET_ALL}",
+@@ -1434,6 +1946,8 @@ def _save_session_atomic(name: str) -> None:
+     }
+     if _session_prompts.get(name):
+         data["session_prompt"] = _session_prompts[name]
++    if _session_plugins.get(name):
++        data["plugins"] = _session_plugins[name]
+     try:
+         with open(tmp_path, "w", encoding="utf-8") as f:
+             json.dump(data, f, ensure_ascii=False, indent=2)
+@@ -1445,6 +1959,7 @@ def _auto_load_all_sessions() -> None:
+     global _sessions, _current_session
+     _sessions = {}
+     _session_prompts.clear()
++    _session_plugins.clear()
+     files = sorted(f for f in os.listdir(SESSION_DIR) if f.endswith(".json"))
+     loaded_any = False
+     for fname in files:
+@@ -1460,6 +1975,9 @@ def _auto_load_all_sessions() -> None:
+                 sp = data.get("session_prompt") if isinstance(data, dict) else None
+                 if isinstance(sp, str) and sp.strip():
+                     _session_prompts[name] = sp
++                pl = _clean_plugin_entries(data.get("plugins")) if isinstance(data, dict) else []
++                if pl:
++                    _session_plugins[name] = pl
+                 loaded_any = True
+             else:
+                 print(
+@@ -1562,6 +2080,8 @@ def rename_session() -> None:
+     _session_last_text[new] = _session_last_text.pop(old, "")
+     if old in _session_prompts:
+         _session_prompts[new] = _session_prompts.pop(old)
++    if old in _session_plugins:
++        _session_plugins[new] = _session_plugins.pop(old)
+     _current_session = new
+ 
+     # Save new session BEFORE removing old file so a crash won't lose data
+@@ -1601,6 +2121,7 @@ def delete_session() -> None:
+     del _sessions[name]
+     _session_last_text.pop(name, None)
+     _session_prompts.pop(name, None)
++    _session_plugins.pop(name, None)
+     # Also delete the file
+     fname = _safe_session_name(name)
+     path = os.path.join(SESSION_DIR, fname)
+@@ -1628,25 +2149,32 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
+ def send_chat(
+     messages: list[dict[str, str]], stream: bool = True
+ ) -> Optional[requests.Response]:
+-    resolved = resolve_request(current_model)
++    for scope, pname, reason in _active_plugins()[1]:
++        _warn_once(f"plugin:{scope}:{pname}:{reason}", f"Plugin '{pname}' ({scope}) is not used: {reason}.")
++    eff = _effective_settings()
++    for pname, mid in eff["skipped_models"]:
++        _warn_once(f"model:{pname}:{mid}:{current_model}",
++                   f"Plugin '{pname}' asks for model '{mid}', which this service does not list; "
++                   f"using {current_model}.")
++    resolved = resolve_request(eff["model"])
+     if resolved is None:
+         return None
+     url, model_id, auth_headers = resolved
+-    provider, _ = split_model(current_model)
++    provider, _ = split_model(eff["model"])
+     spec = PROVIDERS[provider]
+ 
+     payload: dict[str, object] = {
+         "model": model_id,
+         "messages": messages,
+         "stream": stream,
+-        "temperature": _temperature,
++        "temperature": eff["temperature"],
+     }
+-    if _max_tokens is not None:
+-        payload["max_tokens"] = _max_tokens
++    if eff["max_tokens"] is not None:
++        payload["max_tokens"] = eff["max_tokens"]
+ 
+     headers = {
+         "Content-Type": "application/json",
+-        "User-Agent": "NekoChat/2.8.14",
++        "User-Agent": "NekoChat/2.8.15",
+         **auth_headers,
+     }
+ 
+@@ -1836,7 +2364,7 @@ def chat_once(user_input: str) -> bool:
+         {"role": "user", "content": user_input, "name": username}
+     )
+ 
+-    print(f"\n{Fore.YELLOW}NekoChat ({current_model}):{Style.RESET_ALL} ", end="", flush=True)
++    print(f"\n{Fore.YELLOW}NekoChat ({_effective_settings()['model']}):{Style.RESET_ALL} ", end="", flush=True)
+ 
+     if _stream_mode:
+         assistant_text, completed = stream_response(response)
+@@ -1962,7 +2490,7 @@ def export_session() -> None:
+ 
+     lines = []
+     lines.append("# NekoChat Session Export\n")
+-    lines.append(f"- **Model:** {current_model}\n")
++    lines.append(f"- **Model:** {_effective_settings()['model']}\n")
+     lines.append(f"- **Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+     if include_system:
+         lines.append(f"- **System Prompt:** {_effective_system_prompt()}\n")
+@@ -2120,7 +2648,7 @@ def _build_exchange_md(
+         "# NekoChat Export\n",
+         f"- **Session:** {_current_session}\n",
+         f"- **Selection:** {sel_text} ({order})\n",
+-        f"- **Model:** {current_model} (at export)\n",
++        f"- **Model:** {_effective_settings()['model']} (at export)\n",
+         f"- **Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+         "\n---\n",
+     ]
+@@ -2470,6 +2998,10 @@ def save_session() -> None:
+             _session_prompts[name] = _session_prompts[_current_session]
+         else:
+             _session_prompts.pop(name, None)
++        if _session_plugins.get(_current_session):
++            _session_plugins[name] = [dict(e) for e in _session_plugins[_current_session]]
++        else:
++            _session_plugins.pop(name, None)
+     _save_session_atomic(name)  # atomic write for crash safety
+     print(f"{Fore.GREEN}[OK] Session saved: {path}{Style.RESET_ALL}")
+ 
+@@ -2529,6 +3061,11 @@ def load_session() -> None:
+         _session_prompts[name] = sp
+     else:
+         _session_prompts.pop(name, None)
++    pl = _clean_plugin_entries(data.get("plugins"))
++    if pl:
++        _session_plugins[name] = pl
++    else:
++        _session_plugins.pop(name, None)
+     temp = data.get("temperature")
+     if isinstance(temp, (int, float)):
+         _temperature = float(temp)
+@@ -2560,6 +3097,7 @@ NekoChat Commands:
+   [key]         — Set or remove API keys for services that need one
+   [system]      — Set the GLOBAL system prompt (shared by every session)
+   [system session] — Set a prompt for the current session only (added after the global one)
++  [plugin]      — Reusable prompts: [plugin] list, show NAME, on NAME [global], off NAME, new NAME
+   [name]        — Change your display name (past messages keep the name they were sent with)
+   [config]      — Set temperature / max_tokens
+   [stream]      — Toggle streaming / batch display mode (batch recommended on web terminals)
+@@ -2672,6 +3210,9 @@ def main() -> None:
+                 if norm == "[system session]":
+                     set_session_prompt()
+                     continue
++                if norm == "[plugin]" or norm == "[plugins]" or norm.startswith("[plugin "):
++                    plugin_command("[plugin]" if norm == "[plugins]" else norm)
++                    continue
+                 if norm.startswith("[system "):
+                     print(f"{Fore.YELLOW}[~] Usage: [system] (global prompt) or [system session] "
+                           f"(this session only).{Style.RESET_ALL}")
+diff --git a/pollenchat_guide.html b/pollenchat_guide.html
+index c091671..3d8c478 100644
+--- a/pollenchat_guide.html
++++ b/pollenchat_guide.html
+@@ -3,7 +3,7 @@
+ <head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-<title>NekoChat v2.8.14 詳細な使い方ガイド</title>
++<title>NekoChat v2.8.15 詳細な使い方ガイド</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+ <style>
+@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
+ <body>
+ 
+ <header>
+-  <h1>NekoChat v2.8.14</h1>
++  <h1>NekoChat v2.8.15</h1>
+   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
+ </header>
+ 
+@@ -384,7 +384,7 @@ a:hover { text-decoration: underline; }
+   </ul>
+ 
+   <h3>複数行の入力と貼り付け</h3>
+-  <p><code>[system]</code>、<code>[system session]</code>、<code>[long]</code> は、単独の行の <code>[end]</code> まで、複数行を読みます。</p>
++  <p><code>[system]</code>、<code>[system session]</code>、<code>[plugin new]</code>、<code>[long]</code> は、単独の行の <code>[end]</code> まで、複数行を読みます。</p>
+   <ul>
+     <li><strong>貼り付けは、まとまり全体を読んでから判断します。</strong> <code>[end]</code> が終了の合図になるのは、貼り付けの<strong>最後の行</strong>にあるとき（または手で単独で打ったとき）だけです。<code>[reset]</code> は、それだけの行のときだけ有効です。貼り付けの途中にあるときは、<strong>ふつうの文章として残し</strong>、その旨を表示します。そのあとで、<code>[end]</code> を自分で入力してください。</li>
+     <li><code>[end]</code> のあと0.3秒以内に届いた行は、AI へは送らず、捨てて報告します。ただし、0.3秒を超える間隔で、細切れに届く貼り付け（遅い SSH など）では、漏れることがあります。</li>
+@@ -395,7 +395,55 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">06</span> temperature / max_tokens の調整</h2>
++  <h2><span class="num">06</span> プラグイン（定型プロンプト）</h2>
++  <p>プラグインは、<strong>名前を付けて保存しておく定型のプロンプト</strong>です。<code>plugins/名前.txt</code> という、ふつうのテキストファイルで、必要なときに、<strong>今のセッション</strong>または<strong>全セッション</strong>へ付け外しできます。プラグインは<strong>データだけ</strong>で、コードも URL も含められません。プロンプトの文章を足して、いくつかの設定を調整するだけで、メッセージの送り先は変えられません。</p>
++  <div class="terminal">
++<span class="out">description: コードをレビューして、問題を優先度順に挙げる</span>
++<span class="out">temperature: 0.2</span>
++<span class="out">max_tokens: 1200</span>
++<span class="out">model: モデルのID</span>
++<span class="out">---</span>
++<span class="out">あなたは経験豊富なコードレビュアーです。</span>
++<span class="out">見つけた問題を、重要なものから順に挙げてください。</span>
++  </div>
++  <ul>
++    <li>先頭の「ヘッダ」は、<code>キー: 値</code> の行だけで、<code>---</code> の行で終わります。使えるキーは、<code>description</code>（1行の説明）、<code>temperature</code>（0.0〜2.0）、<code>max_tokens</code>、<code>model</code> で、<strong>すべて省略できます</strong>。知らないキーはエラーです。ヘッダのないファイルは、そのまま本文になります。</li>
++    <li>名前は、<code>a-z</code>、<code>0-9</code>、<code>-</code>、<code>_</code> が使えます（40文字まで）。本文は、20,000文字までです。</li>
++    <li><code>description</code> は<strong>人が見るための説明</strong>で、AI には送られません。送られるのは、本文だけです。</li>
++  </ul>
++  <table>
++    <tr><th>コマンド</th><th>内容</th></tr>
++    <tr><td><code>[plugin]</code></td><td>一覧（<code>[S]</code> はこのセッションに付いている、<code>[G]</code> は全セッションに付いている）</td></tr>
++    <tr><td><code>[plugin show 名前]</code></td><td>ヘッダ、設定、本文を表示</td></tr>
++    <tr><td><code>[plugin on 名前]</code></td><td>今のセッションに付ける</td></tr>
++    <tr><td><code>[plugin on 名前 global]</code></td><td>全セッションに付ける</td></tr>
++    <tr><td><code>[plugin off 名前]</code></td><td>外す（ファイルは <code>plugins/</code> に残ります）</td></tr>
++    <tr><td><code>[plugin new 名前]</code></td><td>作る（説明、任意の設定、本文の順に聞かれます。本文は <code>[end]</code> で終えます）</td></tr>
++  </table>
++  <div class="terminal">
++<span class="prompt">Taro[default] :</span> <span class="cmd">[plugin on code-review]</span>
++
++<span class="out">Plugin 'code-review' -> session 'default'</span>
++<span class="out">  Description : コードをレビューして、問題を優先度順に挙げる</span>
++<span class="out">  Prompt text : 46 characters</span>
++<span class="out">    あなたは経験豊富なコードレビュアーです。</span>
++<span class="out">    見つけた問題を、重要なものから順に挙げてください。</span>
++<span class="out">  Settings it changes while attached (config.json is not modified):</span>
++<span class="out">    temperature : 0.7 -> 0.2</span>
++<span class="out">    max_tokens  : (server default) -> 1200</span>
++<span class="prompt">[+]</span> <span class="out">Attach? (Y/n): </span>
++<span class="out">[OK] Plugin 'code-review' attached to session 'default'.</span>
++  </div>
++  <p><strong>付けるときは、毎回確認します。</strong> 文章の長さ、プレビュー、変わる設定（どのプラグインの設定を置き換えるか）が表示されます。このとき、ファイルの SHA-256（内容の指紋）を覚えておきます。<strong>あとでファイルが書き換えられたり、消えたり、壊れたりすると、そのプラグインは使われません</strong>（お知らせを1回表示します）。もう一度 <code>[plugin on 名前]</code> で承認すれば、使えるようになります。保存されるのは、名前と指紋だけです（全体は <code>config.json</code> の <code>plugins</code>、セッションはそのセッションのファイル）。</p>
++  <p><strong>AI に送られるもの</strong>は、1つの system メッセージです。全体のプロンプト、全体のプラグイン、セッションのプロンプト、セッションのプラグイン（付けた順）の順に、空行でつなぎます。</p>
++  <div class="note">
++    <strong>設定は、上から重ねるだけで、保存されません。</strong> 付けている間だけ、<code>temperature</code>・<code>max_tokens</code>・<code>model</code> が、送信に使われます。<code>config.json</code> は書き換えられず、外せば元の値に戻ります。セッションのプラグインは全体のプラグインより、あとのものは前のものより、優先されます。<code>[config]</code>、<code>[model]</code>、<code>[system]</code>、返信のラベルに、今効いている内容が表示されます。<code>model</code> は、<strong>今のサービスの中のモデル ID</strong> だけを指定できます。サービスのモデル一覧が分かっていて、そこにないときは、お知らせを出して無視します（一覧を確認できないときは、そのまま使います）。
++  </div>
++  <p>プラグインのファイルは、ふつうのテキストなので、別のマシンへコピーできます。自分で書いていないファイルは、ほかのプロンプトと同じように扱ってください。中の文章は、使っている AI サービスに送られます。</p>
++</section>
++
++<section>
++  <h2><span class="num">07</span> temperature / max_tokens の調整</h2>
+   <p><code>[config]</code> で生成パラメータを変更できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[config]</span>
+@@ -416,7 +464,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">07</span> ストリーミングモードの切り替え</h2>
++  <h2><span class="num">08</span> ストリーミングモードの切り替え</h2>
+   <p><code>[stream]</code> で「1文字ずつ表示」と「完了後に一括表示」を切り替えます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[stream]</span>
+@@ -426,7 +474,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">08</span> 画像生成</h2>
++  <h2><span class="num">09</span> 画像生成</h2>
+   <p><code>[image]</code> で画像生成モードに入ります。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[image]</span>
+@@ -456,7 +504,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">09</span> マルチライン入力</h2>
++  <h2><span class="num">10</span> マルチライン入力</h2>
+   <p><code>[long]</code> で長文やコードを貼り付けて送信できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[long]</span>
+@@ -472,7 +520,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">10</span> ファイルのインポート</h2>
++  <h2><span class="num">11</span> ファイルのインポート</h2>
+   <p><code>[import]</code> で <code>.md</code> / <code>.txt</code> ファイルを読み込んで送信できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[import]</span>
+@@ -488,7 +536,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">11</span> 会話履歴の検索</h2>
++  <h2><span class="num">12</span> 会話履歴の検索</h2>
+   <p><code>[search]</code> で過去のメッセージをキーワード検索できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[search]</span>
+@@ -502,7 +550,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">12</span> Markdown の再表示とコード保存</h2>
++  <h2><span class="num">13</span> Markdown の再表示とコード保存</h2>
+   <p><code>[render]</code> で直前の応答をMarkdown整形して再表示。<code>[savecode]</code> でコードブロックを抽出保存します。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[render]</span>
+@@ -523,7 +571,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">13</span> セッションのエクスポート</h2>
++  <h2><span class="num">14</span> セッションのエクスポート</h2>
+   <p><code>[export]</code> で現在の会話をMarkdownファイルに出力します。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[export]</span>
+@@ -534,7 +582,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">14</span> Undo とトークン概算</h2>
++  <h2><span class="num">15</span> Undo とトークン概算</h2>
+   <p><code>[undo]</code> で直前のやり取りを削除。<code>[token]</code> で現在のコンテキストの概算トークン数を確認できます。</p>
+   <div class="terminal">
+ <span class="prompt">Taro[default] :</span> <span class="cmd">[undo]</span>
+@@ -551,7 +599,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">15</span> 複数セッション管理</h2>
++  <h2><span class="num">16</span> 複数セッション管理</h2>
+   <p>v2.8 の目玉機能です。複数の会話を並行して管理できます。</p>
+ 
+   <h3>セッション一覧と切り替え</h3>
+@@ -598,7 +646,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">16</span> 便利なワークフロー例</h2>
++  <h2><span class="num">17</span> 便利なワークフロー例</h2>
+ 
+   <h3>ワークフロー1: 仕事と趣味を分ける</h3>
+   <div class="terminal">
+@@ -636,7 +684,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">17</span> コマンド早見表</h2>
++  <h2><span class="num">18</span> コマンド早見表</h2>
+   <table>
+     <tr><th>コマンド</th><th>用途</th></tr>
+     <tr><td><code>[service]</code></td><td>サービスを切り替え（キー入力→モデル選択まで）</td></tr>
+@@ -644,6 +692,7 @@ a:hover { text-decoration: underline; }
+     <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
+     <tr><td><code>[system]</code></td><td>全体のシステムプロンプトを設定（全セッション共通）</td></tr>
+     <tr><td><code>[system session]</code></td><td>今のセッションだけのシステムプロンプトを設定</td></tr>
++    <tr><td><code>[plugin]</code></td><td>定型プロンプト（プラグイン）の一覧・表示・付け外し・作成</td></tr>
+     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
+     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>
+     <tr><td><code>[image]</code></td><td>画像生成モード</td></tr>
+@@ -668,7 +717,7 @@ a:hover { text-decoration: underline; }
+ </section>
+ 
+ <section>
+-  <h2><span class="num">18</span> トラブルシューティング</h2>
++  <h2><span class="num">19</span> トラブルシューティング</h2>
+ 
+   <h3>HTTP 429 (Rate Limited)</h3>
+   <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
+diff --git a/pollenchat_guide.md b/pollenchat_guide.md
+index 0a9c5a3..f46dfad 100644
+--- a/pollenchat_guide.md
++++ b/pollenchat_guide.md
+@@ -1,4 +1,4 @@
+-# NekoChat 使い方ガイド（v2.8.14）
++# NekoChat 使い方ガイド（v2.8.15）
+ 
+ NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
+ 
+@@ -184,7 +184,7 @@ Received 1 line(s), 23 characters:
+ 
+ ### 複数行の入力と貼り付け
+ 
+-`[system]`、`[system session]`、`[long]` は、単独の行の `[end]` まで、複数行を読みます。
++`[system]`、`[system session]`、`[plugin new]`、`[long]` は、単独の行の `[end]` まで、複数行を読みます。
+ 
+ - **貼り付けは、まとまり全体を読んでから判断します。** `[end]` が終了の合図になるのは、貼り付けの**最後の行**にあるとき（または手で単独で打ったとき）だけです。`[reset]` は、それだけの行のときだけ有効です。貼り付けの途中にあるときは、**ふつうの文章として残し**、その旨を表示します。そのあとで、`[end]` を自分で入力してください。
+ - `[end]` のあと0.3秒以内に届いた行は、AI へは送らず、捨てて報告します。ただし、0.3秒を超える間隔で、細切れに届く貼り付け（遅い SSH など）では、漏れることがあります。
+@@ -194,6 +194,58 @@ Received 1 line(s), 23 characters:
+ 
+ ---
+ 
++## プラグイン（定型プロンプト）
++
++プラグインは、**名前を付けて保存しておく定型のプロンプト**です。`plugins/名前.txt` という、ふつうのテキストファイルで、必要なときに、**今のセッション**または**全セッション**へ付け外しできます。プラグインは**データだけ**で、コードも URL も含められません。プロンプトの文章を足して、いくつかの設定を調整するだけで、メッセージの送り先は変えられません。
++
++```
++description: コードをレビューして、問題を優先度順に挙げる
++temperature: 0.2
++max_tokens: 1200
++model: モデルのID
++---
++あなたは経験豊富なコードレビュアーです。
++見つけた問題を、重要なものから順に挙げてください。
++```
++
++- 先頭の「ヘッダ」は、`キー: 値` の行だけで、`---` の行で終わります。使えるキーは、`description`（1行の説明）、`temperature`（0.0〜2.0）、`max_tokens`、`model` で、**すべて省略できます**。知らないキーはエラーです。ヘッダのないファイルは、そのまま本文になります。
++- 名前は、`a-z`、`0-9`、`-`、`_` が使えます（40文字まで）。本文は、20,000文字までです。
++- `description` は**人が見るための説明**で、AI には送られません。送られるのは、本文だけです。
++
++| コマンド | 内容 |
++|----------|------|
++| `[plugin]` | 一覧（`[S]` はこのセッションに付いている、`[G]` は全セッションに付いている） |
++| `[plugin show 名前]` | ヘッダ、設定、本文を表示 |
++| `[plugin on 名前]` | 今のセッションに付ける |
++| `[plugin on 名前 global]` | 全セッションに付ける |
++| `[plugin off 名前]` | 外す（ファイルは `plugins/` に残ります） |
++| `[plugin new 名前]` | 作る（説明、任意の設定、本文の順に聞かれます。本文は `[end]` で終えます） |
++
++```
++Taro[default] : [plugin on code-review]
++
++Plugin 'code-review' -> session 'default'
++  Description : コードをレビューして、問題を優先度順に挙げる
++  Prompt text : 46 characters
++    あなたは経験豊富なコードレビュアーです。
++    見つけた問題を、重要なものから順に挙げてください。
++  Settings it changes while attached (config.json is not modified):
++    temperature : 0.7 -> 0.2
++    max_tokens  : (server default) -> 1200
++[+] Attach? (Y/n):
++[OK] Plugin 'code-review' attached to session 'default'.
++```
++
++**付けるときは、毎回確認します。** 文章の長さ、プレビュー、変わる設定（どのプラグインの設定を置き換えるか）が表示されます。このとき、ファイルの SHA-256（内容の指紋）を覚えておきます。**あとでファイルが書き換えられたり、消えたり、壊れたりすると、そのプラグインは使われません**（お知らせを1回表示します）。もう一度 `[plugin on 名前]` で承認すれば、使えるようになります。保存されるのは、名前と指紋だけです（全体は `config.json` の `plugins`、セッションはそのセッションのファイル）。
++
++**AI に送られるもの**は、1つの system メッセージです。全体のプロンプト、全体のプラグイン、セッションのプロンプト、セッションのプラグイン（付けた順）の順に、空行でつなぎます。
++
++**設定は、上から重ねるだけで、保存されません。** 付けている間だけ、`temperature`・`max_tokens`・`model` が、送信に使われます。`config.json` は書き換えられず、外せば元の値に戻ります。セッションのプラグインは全体のプラグインより、あとのものは前のものより、優先されます。`[config]`、`[model]`、`[system]`、返信のラベルに、今効いている内容が表示されます。`model` は、**今のサービスの中のモデル ID** だけを指定できます。サービスのモデル一覧が分かっていて、そこにないときは、お知らせを出して無視します（一覧を確認できないときは、そのまま使います）。
++
++プラグインのファイルは、ふつうのテキストなので、別のマシンへコピーできます。自分で書いていないファイルは、ほかのプロンプトと同じように扱ってください。中の文章は、使っている AI サービスに送られます。
++
++---
++
+ ## temperature / max_tokens
+ 
+ ```
+@@ -445,6 +497,7 @@ Bye bye, Taro!
+ | `[key]` | APIキーの設定・削除 |
+ | `[system]` | 全体のシステムプロンプトを設定（全セッション共通） |
+ | `[system session]` | 今のセッションだけのシステムプロンプトを設定 |
++| `[plugin]` | 定型プロンプト（プラグイン）の一覧・表示・付け外し・作成 |
+ | `[config]` | temperature / max_tokens を調整 |
+ | `[stream]` | ストリーミング ON/OFF 切り替え |
+ | `[image]` | 画像生成モード |
+diff --git a/usage.txt b/usage.txt
+index de6a692..64c5907 100644
+--- a/usage.txt
++++ b/usage.txt
+@@ -3,6 +3,7 @@
+ [key]        — APIキーの設定・削除（入力は非表示、keys.json に保存も可）
+ [system]     — 全体のシステムプロンプト設定（全セッション共通。複数行入力可、[end]で確定 / [reset]でデフォルトに戻す）
+ [system session] — 今のセッションだけのシステムプロンプト（全体の後ろに足される。[reset]で削除）
++[plugin]     — 定型プロンプト（プラグイン）。[plugin] 一覧 / [plugin show 名前] / [plugin on 名前 [global]] 付ける / [plugin off 名前] 外す / [plugin new 名前] 作る
+ [config]     — temperature / max_tokens
+ [stream]     — ストリーミングON/OFF
+ [image]      — 画像生成（[size] / [seed] 対応、サイズは64〜4096）
+@@ -30,4 +31,4 @@
+ [exit]       — 終了（全セッション自動保存）
+ 
+ ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
+-※ v2.8.14〜
++※ v2.8.15〜

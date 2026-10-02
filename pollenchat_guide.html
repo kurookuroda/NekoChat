@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NekoChat v2.8.14 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.15 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>NekoChat v2.8.14</h1>
+  <h1>NekoChat v2.8.15</h1>
   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
@@ -384,7 +384,7 @@ a:hover { text-decoration: underline; }
   </ul>
 
   <h3>複数行の入力と貼り付け</h3>
-  <p><code>[system]</code>、<code>[system session]</code>、<code>[long]</code> は、単独の行の <code>[end]</code> まで、複数行を読みます。</p>
+  <p><code>[system]</code>、<code>[system session]</code>、<code>[plugin new]</code>、<code>[long]</code> は、単独の行の <code>[end]</code> まで、複数行を読みます。</p>
   <ul>
     <li><strong>貼り付けは、まとまり全体を読んでから判断します。</strong> <code>[end]</code> が終了の合図になるのは、貼り付けの<strong>最後の行</strong>にあるとき（または手で単独で打ったとき）だけです。<code>[reset]</code> は、それだけの行のときだけ有効です。貼り付けの途中にあるときは、<strong>ふつうの文章として残し</strong>、その旨を表示します。そのあとで、<code>[end]</code> を自分で入力してください。</li>
     <li><code>[end]</code> のあと0.3秒以内に届いた行は、AI へは送らず、捨てて報告します。ただし、0.3秒を超える間隔で、細切れに届く貼り付け（遅い SSH など）では、漏れることがあります。</li>
@@ -395,7 +395,55 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">06</span> temperature / max_tokens の調整</h2>
+  <h2><span class="num">06</span> プラグイン（定型プロンプト）</h2>
+  <p>プラグインは、<strong>名前を付けて保存しておく定型のプロンプト</strong>です。<code>plugins/名前.txt</code> という、ふつうのテキストファイルで、必要なときに、<strong>今のセッション</strong>または<strong>全セッション</strong>へ付け外しできます。プラグインは<strong>データだけ</strong>で、コードも URL も含められません。プロンプトの文章を足して、いくつかの設定を調整するだけで、メッセージの送り先は変えられません。</p>
+  <div class="terminal">
+<span class="out">description: コードをレビューして、問題を優先度順に挙げる</span>
+<span class="out">temperature: 0.2</span>
+<span class="out">max_tokens: 1200</span>
+<span class="out">model: モデルのID</span>
+<span class="out">---</span>
+<span class="out">あなたは経験豊富なコードレビュアーです。</span>
+<span class="out">見つけた問題を、重要なものから順に挙げてください。</span>
+  </div>
+  <ul>
+    <li>先頭の「ヘッダ」は、<code>キー: 値</code> の行だけで、<code>---</code> の行で終わります。使えるキーは、<code>description</code>（1行の説明）、<code>temperature</code>（0.0〜2.0）、<code>max_tokens</code>、<code>model</code> で、<strong>すべて省略できます</strong>。知らないキーはエラーです。ヘッダのないファイルは、そのまま本文になります。</li>
+    <li>名前は、<code>a-z</code>、<code>0-9</code>、<code>-</code>、<code>_</code> が使えます（40文字まで）。本文は、20,000文字までです。</li>
+    <li><code>description</code> は<strong>人が見るための説明</strong>で、AI には送られません。送られるのは、本文だけです。</li>
+  </ul>
+  <table>
+    <tr><th>コマンド</th><th>内容</th></tr>
+    <tr><td><code>[plugin]</code></td><td>一覧（<code>[S]</code> はこのセッションに付いている、<code>[G]</code> は全セッションに付いている）</td></tr>
+    <tr><td><code>[plugin show 名前]</code></td><td>ヘッダ、設定、本文を表示</td></tr>
+    <tr><td><code>[plugin on 名前]</code></td><td>今のセッションに付ける</td></tr>
+    <tr><td><code>[plugin on 名前 global]</code></td><td>全セッションに付ける</td></tr>
+    <tr><td><code>[plugin off 名前]</code></td><td>外す（ファイルは <code>plugins/</code> に残ります）</td></tr>
+    <tr><td><code>[plugin new 名前]</code></td><td>作る（説明、任意の設定、本文の順に聞かれます。本文は <code>[end]</code> で終えます）</td></tr>
+  </table>
+  <div class="terminal">
+<span class="prompt">Taro[default] :</span> <span class="cmd">[plugin on code-review]</span>
+
+<span class="out">Plugin 'code-review' -> session 'default'</span>
+<span class="out">  Description : コードをレビューして、問題を優先度順に挙げる</span>
+<span class="out">  Prompt text : 46 characters</span>
+<span class="out">    あなたは経験豊富なコードレビュアーです。</span>
+<span class="out">    見つけた問題を、重要なものから順に挙げてください。</span>
+<span class="out">  Settings it changes while attached (config.json is not modified):</span>
+<span class="out">    temperature : 0.7 -> 0.2</span>
+<span class="out">    max_tokens  : (server default) -> 1200</span>
+<span class="prompt">[+]</span> <span class="out">Attach? (Y/n): </span>
+<span class="out">[OK] Plugin 'code-review' attached to session 'default'.</span>
+  </div>
+  <p><strong>付けるときは、毎回確認します。</strong> 文章の長さ、プレビュー、変わる設定（どのプラグインの設定を置き換えるか）が表示されます。このとき、ファイルの SHA-256（内容の指紋）を覚えておきます。<strong>あとでファイルが書き換えられたり、消えたり、壊れたりすると、そのプラグインは使われません</strong>（お知らせを1回表示します）。もう一度 <code>[plugin on 名前]</code> で承認すれば、使えるようになります。保存されるのは、名前と指紋だけです（全体は <code>config.json</code> の <code>plugins</code>、セッションはそのセッションのファイル）。</p>
+  <p><strong>AI に送られるもの</strong>は、1つの system メッセージです。全体のプロンプト、全体のプラグイン、セッションのプロンプト、セッションのプラグイン（付けた順）の順に、空行でつなぎます。</p>
+  <div class="note">
+    <strong>設定は、上から重ねるだけで、保存されません。</strong> 付けている間だけ、<code>temperature</code>・<code>max_tokens</code>・<code>model</code> が、送信に使われます。<code>config.json</code> は書き換えられず、外せば元の値に戻ります。セッションのプラグインは全体のプラグインより、あとのものは前のものより、優先されます。<code>[config]</code>、<code>[model]</code>、<code>[system]</code>、返信のラベルに、今効いている内容が表示されます。<code>model</code> は、<strong>今のサービスの中のモデル ID</strong> だけを指定できます。サービスのモデル一覧が分かっていて、そこにないときは、お知らせを出して無視します（一覧を確認できないときは、そのまま使います）。
+  </div>
+  <p>プラグインのファイルは、ふつうのテキストなので、別のマシンへコピーできます。自分で書いていないファイルは、ほかのプロンプトと同じように扱ってください。中の文章は、使っている AI サービスに送られます。</p>
+</section>
+
+<section>
+  <h2><span class="num">07</span> temperature / max_tokens の調整</h2>
   <p><code>[config]</code> で生成パラメータを変更できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[config]</span>
@@ -416,7 +464,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">07</span> ストリーミングモードの切り替え</h2>
+  <h2><span class="num">08</span> ストリーミングモードの切り替え</h2>
   <p><code>[stream]</code> で「1文字ずつ表示」と「完了後に一括表示」を切り替えます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[stream]</span>
@@ -426,7 +474,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">08</span> 画像生成</h2>
+  <h2><span class="num">09</span> 画像生成</h2>
   <p><code>[image]</code> で画像生成モードに入ります。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[image]</span>
@@ -456,7 +504,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">09</span> マルチライン入力</h2>
+  <h2><span class="num">10</span> マルチライン入力</h2>
   <p><code>[long]</code> で長文やコードを貼り付けて送信できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[long]</span>
@@ -472,7 +520,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">10</span> ファイルのインポート</h2>
+  <h2><span class="num">11</span> ファイルのインポート</h2>
   <p><code>[import]</code> で <code>.md</code> / <code>.txt</code> ファイルを読み込んで送信できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[import]</span>
@@ -488,7 +536,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">11</span> 会話履歴の検索</h2>
+  <h2><span class="num">12</span> 会話履歴の検索</h2>
   <p><code>[search]</code> で過去のメッセージをキーワード検索できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[search]</span>
@@ -502,7 +550,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">12</span> Markdown の再表示とコード保存</h2>
+  <h2><span class="num">13</span> Markdown の再表示とコード保存</h2>
   <p><code>[render]</code> で直前の応答をMarkdown整形して再表示。<code>[savecode]</code> でコードブロックを抽出保存します。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[render]</span>
@@ -523,7 +571,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">13</span> セッションのエクスポート</h2>
+  <h2><span class="num">14</span> セッションのエクスポート</h2>
   <p><code>[export]</code> で現在の会話をMarkdownファイルに出力します。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[export]</span>
@@ -534,7 +582,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">14</span> Undo とトークン概算</h2>
+  <h2><span class="num">15</span> Undo とトークン概算</h2>
   <p><code>[undo]</code> で直前のやり取りを削除。<code>[token]</code> で現在のコンテキストの概算トークン数を確認できます。</p>
   <div class="terminal">
 <span class="prompt">Taro[default] :</span> <span class="cmd">[undo]</span>
@@ -551,7 +599,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">15</span> 複数セッション管理</h2>
+  <h2><span class="num">16</span> 複数セッション管理</h2>
   <p>v2.8 の目玉機能です。複数の会話を並行して管理できます。</p>
 
   <h3>セッション一覧と切り替え</h3>
@@ -598,7 +646,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">16</span> 便利なワークフロー例</h2>
+  <h2><span class="num">17</span> 便利なワークフロー例</h2>
 
   <h3>ワークフロー1: 仕事と趣味を分ける</h3>
   <div class="terminal">
@@ -636,7 +684,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">17</span> コマンド早見表</h2>
+  <h2><span class="num">18</span> コマンド早見表</h2>
   <table>
     <tr><th>コマンド</th><th>用途</th></tr>
     <tr><td><code>[service]</code></td><td>サービスを切り替え（キー入力→モデル選択まで）</td></tr>
@@ -644,6 +692,7 @@ a:hover { text-decoration: underline; }
     <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
     <tr><td><code>[system]</code></td><td>全体のシステムプロンプトを設定（全セッション共通）</td></tr>
     <tr><td><code>[system session]</code></td><td>今のセッションだけのシステムプロンプトを設定</td></tr>
+    <tr><td><code>[plugin]</code></td><td>定型プロンプト（プラグイン）の一覧・表示・付け外し・作成</td></tr>
     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>
     <tr><td><code>[image]</code></td><td>画像生成モード</td></tr>
@@ -668,7 +717,7 @@ a:hover { text-decoration: underline; }
 </section>
 
 <section>
-  <h2><span class="num">18</span> トラブルシューティング</h2>
+  <h2><span class="num">19</span> トラブルシューティング</h2>
 
   <h3>HTTP 429 (Rate Limited)</h3>
   <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
