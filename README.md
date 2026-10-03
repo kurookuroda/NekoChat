@@ -1,4 +1,4 @@
-# NekoChat v2.8.15
+# NekoChat v2.8.16
 
 A clean, harmless CLI chat client for several LLM services.
 
@@ -9,6 +9,7 @@ NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat ap
 - **Multiple services** — Switch service with `[service]` and model with `[model]`; add your own OpenAI-compatible service in `config.json`
 - **API keys kept out of the way** — Set keys with `[key]`; they are stored only in `keys.json` (owner-only, git-ignored), never in configs, sessions or exports
 - **Streaming & batch modes** — Toggle live token-by-token output or wait-for-complete display
+- **Discord delivery** — Post chosen exchanges to Discord channels through webhooks with `[discord ...]`, using the same selection syntax as `[export]`
 - **Plugins** — Reusable prompts saved as text files and attached to a session or to every session with `[plugin]`, optionally with their own temperature / max_tokens / model
 - **System prompt layers** — A global prompt with `[system]` and an optional prompt for just the current session with `[system session]`
 - **Temperature / max_tokens control** — Fine-tune generation parameters with `[config]`
@@ -111,6 +112,7 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
 | `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
 | `[system]` | Set the **global** system prompt, shared by every session (multi-line, `[end]` to finish, `[reset]` for default) |
 | `[system session]` | Set a system prompt for the **current session only**; it is added after the global one (`[reset]` removes it) |
+| `[discord]` | Post chosen exchanges to Discord webhooks: `[discord -1]`, `[discord 2:5 bare to NAME]`, `[discord add webhook [LABEL]]`, `[discord rm LABEL]` |
 | `[plugin]` | Reusable prompts: `[plugin]` lists, `[plugin show NAME]`, `[plugin on NAME [global]]`, `[plugin off NAME]`, `[plugin new NAME]` |
 | `[config]` | Set `temperature` / `max_tokens` |
 | `[stream]` | Toggle streaming / batch display mode |
@@ -175,6 +177,7 @@ NekoChat creates the following files and directories in its working folder:
 - `pollen_codes/` — Extracted code blocks
 - `pollen_exports/` — Exported Markdown conversations
 - `config.json` — User preferences (model, system prompt, username, optional `providers` and `plugins`, etc.)
+- `discord_webhooks.txt` — Discord webhook URLs registered with `[discord add webhook]` (owner-only; never commit it)
 - `plugins/` — Plugin files (`NAME.txt`)
 - `keys.json` — API keys saved with `[key]` (owner-only; never commit it)
 
@@ -199,6 +202,35 @@ There are two layers:
 What is sent to the AI is the global prompt, a blank line, then the session prompt, as **one** system message. `[system]` and `[system session]` first show both layers and how many characters are sent. `[sessions]` marks sessions that have a session prompt (`[+prompt]`). `[new]` starts without one, `[rename]` / `[delete]` / `[save]` carry it along, and `[export]` / `[token]` use what is actually sent. A change takes effect from the next message; earlier replies stay in the history, so for a clean break start a new session.
 
 `[load]` (legacy) restores a session's own prompt but no longer overwrites the global one.
+
+## Discord Delivery
+
+`[discord ...]` posts exchanges from the current session to Discord through **webhooks**. The selection and flags work exactly like `[export]`.
+
+```
+[discord]                          registered webhooks (URL hidden) and usage
+[discord add webhook [LABEL]]      register a webhook (the URL is typed with hidden input)
+[discord rm LABEL]                 remove one
+[discord list]                     the same numbered list as [export list]
+[discord -1]                       send the latest exchange
+[discord 2:5 rev bare full]        index / slice and flags as in [export] (bare = answers only)
+[discord -3: to main backup]       choose destinations by label (default: every registered webhook)
+[discord -3: to webhook]           or by kind (all webhooks)
+```
+
+You must give an index or a slice (`:` means everything). Create a webhook in the Discord channel settings (Integrations > Webhooks); you can also post into an existing thread by adding `?thread_id=THREAD_ID` to the URL.
+
+**Where the URLs live.** A webhook URL contains a secret token: anyone who has it can post to the channel. NekoChat keeps it in `discord_webhooks.txt` (created owner-only, listed in `.gitignore`) and/or in the environment variable `DISCORD_WEBHOOK_URL` (label `env`). It is never written to `config.json`, sessions or exports, and never printed (errors are scrubbed too). The file takes one webhook per line, either `URL` or `LABEL URL`, with `#` for comments; a JSON array or object also works (edit those by hand). Unlabeled entries are named `webhook1`, `webhook2`, … in file order, so give labels to keep names stable. Labels use `a-z`, `0-9`, `-`, `_` (up to 32 characters) and cannot be `webhook`, `bot`, `all`, `to`, `list`, `add`, `rm` or `env`. Only `https://discord.com/api/webhooks/ID/TOKEN` URLs (also `discordapp.com`, `canary.`, `ptb.`) are accepted. If you ever pasted a real URL somewhere public, delete that webhook in Discord and create a new one.
+
+**What a send does.**
+- It first shows the destinations, how many messages and posts, the character count, the estimated time and a preview of the first message, and asks `Send? (Y/n)`.
+- Each exchange becomes one or more messages: a header `**#12** : Neko : 2026-10-03 18:40`, the question as a quote (shortened unless `full`; omitted with `bare`), then the answer. System prompts and plugin texts are not sent.
+- Messages over Discord's 2000-character limit are cut at line boundaries (the limit is counted in UTF-16 units, so emoji count double), code fences are closed and reopened, and every part but the last ends with `(続く...)`. A send needing more than 100 messages per webhook is refused: choose fewer exchanges.
+- `@everyone` and role pings in the text are disabled (`allowed_mentions` is empty).
+- Two posts to the same webhook (same webhook ID) are at least **3 seconds** apart, counted from the end of the previous post; different webhooks follow each other at once. A long send therefore takes about (messages − 1) × 3 s plus the time the requests take.
+- On HTTP 429 NekoChat waits `retry_after` (at most 60 s) and tries again, up to 5 times. A webhook that fails stops receiving; the others carry on. The result is reported per webhook (`main: 8/8 sent`, or where it stopped and why). Ctrl+C stops cleanly and reports how far it got. Nothing is re-sent automatically.
+
+Only webhooks are supported so far; a bot-token mode (creating threads) is planned as `[discord add bot]`.
 
 ## Plugins
 

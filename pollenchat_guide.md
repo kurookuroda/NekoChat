@@ -1,4 +1,4 @@
-# NekoChat 使い方ガイド（v2.8.15）
+# NekoChat 使い方ガイド（v2.8.16）
 
 NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
 
@@ -384,6 +384,37 @@ Taro[default] : [export]
 
 ---
 
+## Discord への配信
+
+`[discord ...]` は、今のセッションのやり取りを、Discord の **Webhook** へ送ります。選び方とフラグは、`[export]` と同じです。
+
+```
+[discord]                          登録済みの Webhook（URL は伏せて表示）と使い方
+[discord add webhook [ラベル]]     Webhook を登録（URL は非表示で入力）
+[discord rm ラベル]                登録を消す
+[discord list]                     [export list] と同じ番号つきの一覧
+[discord -1]                       最新のやり取りを送る
+[discord 2:5 rev bare full]        番号・範囲・フラグは [export] と同じ（bare = 回答のみ）
+[discord -3: to main backup]       送信先をラベルで指定（省略時は、登録した全部）
+[discord -3: to webhook]           種類で指定（全部の Webhook）
+```
+
+番号か範囲の指定は、必須です（`:` は「すべて」）。Webhook は、Discord のチャンネルの設定（連携サービス → ウェブフック）で作ります。既存のスレッドへ送るときは、URL の末尾に `?thread_id=スレッドのID` を付けます。
+
+**URL の置き場所。** Webhook の URL には、秘密のトークンが含まれていて、知っている人は誰でも、そのチャンネルに投稿できます。NekoChat は、`discord_webhooks.txt`（所有者だけが読める権限で作られ、`.gitignore` に入っています）と、環境変数 `DISCORD_WEBHOOK_URL`（ラベルは `env`）に保存します。`config.json`、セッション、エクスポートには書かれず、画面にもエラー文にも、表示されません。ファイルは、1行に1つ、`URL` か `ラベル URL` の形で、`#` はコメントです（JSON の配列やオブジェクトも読めますが、その場合は手で編集します）。ラベルのない行は、ファイルの順に `webhook1`、`webhook2`… という名前になるので、名前を固定したいときは、ラベルを付けてください。ラベルには、`a-z`、`0-9`、`-`、`_`（32文字まで）が使えますが、`webhook`、`bot`、`all`、`to`、`list`、`add`、`rm`、`env` は使えません。受け付ける URL は、`https://discord.com/api/webhooks/ID/トークン`（`discordapp.com`、`canary.`、`ptb.` も可）だけです。本物の URL を、公開の場所に貼ってしまったときは、Discord でその Webhook を削除して、作り直してください。
+
+**送るときの動き**
+- まず、送信先、メッセージ数と投稿数、文字数、所要時間の目安、最初のメッセージのプレビューを表示して、`Send? (Y/n)` と聞きます。
+- 1つのやり取りは、1つ以上のメッセージになります。見出し `**#12** : Neko : 2026-10-03 18:40`、質問の引用（長いと短縮。`full` で全文。`bare` では省略）、回答の順です。システムプロンプトとプラグインの本文は、送りません。
+- Discord の2000文字の上限を超えるときは、行の境目で分割します（数え方は UTF-16 なので、絵文字は2文字分です）。コードブロックは閉じて開き直し、最後以外の末尾に `(続く...)` が付きます。1つの Webhook あたり100メッセージを超える送信は、断ります。送るやり取りを減らしてください。
+- 本文中の `@everyone` やロールのメンションでは、通知が飛びません（`allowed_mentions` を空にしています）。
+- **同じ Webhook（同じ Webhook ID）への2つの投稿は、前の投稿が終わってから3秒以上**あけます。別の Webhook へは、続けて送ります。このため、長い送信は、（メッセージ数 − 1）× 3秒に、通信の時間を足した程度かかります。
+- HTTP 429 のときは、`retry_after`（最大60秒）だけ待って、最大5回まで再送します。失敗した Webhook への送信は、そこで止めて、ほかの Webhook には続けます。結果は、Webhook ごとに報告されます（`main: 8/8 sent`、または止まった場所と理由）。Ctrl+C で、安全に止まり、どこまで送ったかを報告します。自動の再送は、しません。
+
+いまは、Webhook だけに対応しています。Bot トークンでスレッドを作る方式は、`[discord add bot]` として、あとで追加する予定です。
+
+---
+
 ## Undo とトークン概算
 
 ```
@@ -497,6 +528,7 @@ Bye bye, Taro!
 | `[key]` | APIキーの設定・削除 |
 | `[system]` | 全体のシステムプロンプトを設定（全セッション共通） |
 | `[system session]` | 今のセッションだけのシステムプロンプトを設定 |
+| `[discord]` | 選んだやり取りを Discord の Webhook へ送る |
 | `[plugin]` | 定型プロンプト（プラグイン）の一覧・表示・付け外し・作成 |
 | `[config]` | temperature / max_tokens を調整 |
 | `[stream]` | ストリーミング ON/OFF 切り替え |

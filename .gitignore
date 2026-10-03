@@ -1,2 +1,5 @@
 # API keys (created by [key]; never commit)
 keys.json
+# Discord webhook URLs contain secret tokens (created by [discord add webhook]; never commit)
+discord_webhooks.txt
+discord_webhooks.txt.tmp

@@ -1,8 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NekoChat v2.8.15 — Clean CLI chat client for several LLM services
+NekoChat v2.8.16 — Clean CLI chat client for several LLM services
 (the file is still named pollenchat.py)
+
+Changes in v2.8.16:
+  - [discord ...] posts chosen exchanges to Discord through webhooks. The
+    selection and flags are the same as [export]:
+      [discord]                         registered webhooks (URL hidden) + usage
+      [discord add webhook [LABEL]]     register one (the URL is typed hidden)
+      [discord rm LABEL]                remove one
+      [discord list]                    the same numbered list as [export list]
+      [discord -1] / [discord 2:5 rev bare full] [to LABEL... | webhook | all]
+    Webhook URLs hold a secret token, so they live in discord_webhooks.txt
+    (owner-only, git-ignored; "URL" or "LABEL URL" per line, '#' comments, or a
+    JSON array/object) and/or DISCORD_WEBHOOK_URL (label "env"), never in
+    config.json, and are never printed (errors are scrubbed too). Only
+    https://discord.com/api/webhooks/ID/TOKEN (optionally ?thread_id=ID) is
+    accepted. With no "to", every registered webhook receives the message.
+  - Every send shows the destinations, message/post counts, characters, the
+    estimated time and a preview, and asks first. Long answers are cut at line
+    boundaries (code fences closed and reopened, length counted in UTF-16,
+    "(続く...)" on all but the last part). @everyone/role pings are disabled.
+    Posts to the SAME webhook (by ID) are 3 s apart; different webhooks follow
+    each other at once. HTTP 429 waits retry_after (at most 5 times, 60 s each).
+    A webhook that fails stops receiving; the others carry on; Ctrl+C stops
+    cleanly; the result is reported per webhook.
 
 Changes in v2.8.15:
   - Plugins: named, reusable prompts kept as plain text in plugins/NAME.txt
@@ -507,7 +530,7 @@ BANNER = r"""
   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
 /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
-                                          v2.8.15
+                                          v2.8.16
         Clean & Harmless — Multi-service LLM chat
 """
 
@@ -987,7 +1010,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "NekoChat/2.8.15"}
+    headers = {"User-Agent": "NekoChat/2.8.16"}
     if spec.get("key_env"):
         key = get_api_key(provider)
         if not key:
@@ -2174,7 +2197,7 @@ def send_chat(
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "NekoChat/2.8.15",
+        "User-Agent": "NekoChat/2.8.16",
         **auth_headers,
     }
 
@@ -2732,6 +2755,558 @@ def export_exchanges(raw: str) -> None:
     except OSError as e:
         print(f"{Fore.RED}[!] Export failed: {e}{Style.RESET_ALL}")
 
+# ============ DISCORD ============
+# [discord ...] posts chosen exchanges to Discord channels through webhooks (a simple path:
+# no bot token, no thread creation). Selection syntax and flags are the same as [export].
+# A webhook URL contains a secret token: it is kept in discord_webhooks.txt (owner-only,
+# git-ignored) or DISCORD_WEBHOOK_URL, entered with hidden input, and never printed.
+DISCORD_FILE = "discord_webhooks.txt"
+DISCORD_ENV = "DISCORD_WEBHOOK_URL"
+DISCORD_MESSAGE_INTERVAL = 3.0   # seconds between two posts to the SAME webhook (by webhook ID)
+DISCORD_LIMIT = 2000             # Discord's per-message limit (counted in UTF-16 code units)
+DISCORD_CHUNK = 1900             # target size when a message has to be split
+DISCORD_CONT = "\n(続く...)"
+DISCORD_RETRY_MAX = 5            # re-sends after HTTP 429
+DISCORD_RETRY_WAIT_MAX = 60.0    # longest single wait for a 429
+DISCORD_MAX_MESSAGES = 100       # refuse sends needing more messages than this
+DISCORD_RESERVED = frozenset({"webhook", "bot", "all", "to", "list", "add", "rm", "env"})
+DISCORD_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+_DISCORD_URL_RE = re.compile(
+    r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/"
+    r"(\d{5,25})/([A-Za-z0-9_-]{10,200})(?:\?thread_id=(\d{5,25}))?"
+)
+DISCORD_USAGE = (
+    "Usage: [discord] | [discord list] | [discord add webhook [LABEL]] | [discord rm LABEL]\n"
+    "       [discord <index|slice> [rev] [bare] [full] [to LABEL... | webhook | all]]\n"
+    "  index : 0 = oldest, -1 = latest   e.g. [discord -1]  [discord 2:5]  [discord -3: to main]\n"
+    "  rev   : reverse the order         bare : answers only      full : do not shorten long questions\n"
+    "  to    : destinations (default: every registered webhook)"
+)
+
+
+class DiscordError(Exception):
+    pass
+
+
+def _u16len(text: str) -> int:
+    """Length in UTF-16 code units - how Discord counts its 2000-character limit."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _discord_hook(label: str, url: str, source: str, line: Optional[int]) -> Optional[dict]:
+    m = _DISCORD_URL_RE.fullmatch(url)
+    if not m:
+        return None
+    return {"label": label, "url": url, "id": m.group(1), "token": m.group(2),
+            "thread_id": m.group(3) or "", "source": source, "line": line}
+
+
+def load_discord_hooks() -> tuple[list[dict], list[str], str]:
+    """Registered webhooks -> (hooks, warnings, file format: "none" | "text" | "json").
+
+    discord_webhooks.txt: one webhook per line, "URL" or "LABEL URL", '#' starts a comment;
+    or a JSON array of URLs / object {label: URL}. DISCORD_WEBHOOK_URL adds one more ("env").
+    Warnings never include the text of a bad line (it may be a secret)."""
+    warns: list[str] = []
+    entries: list[tuple[Optional[str], str, Optional[int]]] = []  # (label, url, line number)
+    fmt = "none"
+    raw: Optional[str] = None
+    try:
+        with open(DISCORD_FILE, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError) as e:
+        warns.append(f"{DISCORD_FILE} could not be read ({type(e).__name__}).")
+    if raw is not None and raw.strip():
+        text = raw.lstrip("\ufeff").strip()
+        data: Any = None
+        if text[:1] in "[{":
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                data = None
+        if isinstance(data, (list, dict)):
+            fmt = "json"
+            items = list(data.items()) if isinstance(data, dict) else [(None, u) for u in data]
+            for k, (label, u) in enumerate(items, 1):
+                if isinstance(u, str) and (label is None or isinstance(label, str)):
+                    entries.append((label, u.strip(), k))
+                else:
+                    warns.append(f"{DISCORD_FILE}: item {k} is not a text URL (ignored).")
+        else:
+            fmt = "text"
+            for no, line in enumerate(raw.lstrip("\ufeff").splitlines(), 1):
+                st = line.strip()
+                if not st or st.startswith("#"):
+                    continue
+                parts = st.split()
+                if len(parts) == 1:
+                    entries.append((None, parts[0], no))
+                elif len(parts) == 2:
+                    entries.append((parts[0], parts[1], no))
+                else:
+                    warns.append(f"{DISCORD_FILE} line {no}: expected 'URL' or 'LABEL URL' (ignored).")
+    hooks: list[dict] = []
+    used: set[str] = set()
+    seen: dict[tuple[str, str], str] = {}
+    pending: list[tuple[dict, int]] = []
+    for label, url, no in entries:
+        where = f"{DISCORD_FILE} {'item' if fmt == 'json' else 'line'} {no}"
+        if label is not None and (not DISCORD_LABEL_RE.fullmatch(label) or label in DISCORD_RESERVED):
+            warns.append(f"{where}: the label is not allowed (use a-z, 0-9, '-' and '_'; "
+                         f"not {', '.join(sorted(DISCORD_RESERVED))}) (ignored).")
+            continue
+        if label is not None and label in used:
+            warns.append(f"{where}: the label '{label}' is already used (ignored).")
+            continue
+        h = _discord_hook(label or "", url, "file", no)
+        if h is None:
+            warns.append(f"{where}: not a Discord webhook URL (ignored).")
+            continue
+        key = (h["id"], h["thread_id"])
+        if key in seen:
+            warns.append(f"{where}: the same webhook as '{seen[key]}' (ignored).")
+            continue
+        if label is not None:
+            used.add(label)
+            seen[key] = label
+            hooks.append(h)
+        else:
+            pending.append((h, len(hooks)))
+            seen[key] = "(unlabeled)"
+            hooks.append(h)
+    n = 0
+    for h, _ in pending:  # unlabeled entries get webhook1, webhook2, ... in file order
+        n += 1
+        while f"webhook{n}" in used:
+            n += 1
+        h["label"] = f"webhook{n}"
+        used.add(h["label"])
+    env_url = (os.environ.get(DISCORD_ENV) or "").strip()
+    if env_url:
+        h = _discord_hook("env", env_url, "env", None)
+        if h is None:
+            warns.append(f"{DISCORD_ENV} is not a Discord webhook URL (ignored).")
+        elif (h["id"], h["thread_id"]) not in seen:
+            hooks.append(h)
+    if hooks and fmt != "none" and os.name == "posix":
+        try:
+            if os.stat(DISCORD_FILE).st_mode & 0o077:
+                warns.append(f"{DISCORD_FILE} can be read by other users; run: chmod 600 {DISCORD_FILE}")
+        except OSError:
+            pass
+    return hooks, warns, fmt
+
+
+def _discord_write(lines: list[str]) -> None:
+    """Rewrite discord_webhooks.txt atomically with owner-only permissions."""
+    tmp = DISCORD_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(ln if ln.endswith("\n") else ln + "\n" for ln in lines))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, DISCORD_FILE)
+
+
+def _discord_read_lines() -> list[str]:
+    try:
+        with open(DISCORD_FILE, "r", encoding="utf-8") as f:
+            return f.read().splitlines(keepends=True)
+    except FileNotFoundError:
+        return []
+
+
+def _hook_desc(h: dict) -> str:
+    where = f"thread {h['thread_id']}" if h["thread_id"] else "channel"
+    return f"{h['label']:<12} ...{h['token'][-4:]}   {where}"
+
+
+def discord_status() -> None:
+    hooks, warns, fmt = load_discord_hooks()
+    print(f"\n{Fore.YELLOW}Discord webhooks ({DISCORD_FILE}):{Style.RESET_ALL}")
+    if not hooks:
+        print("  (none yet - add one with [discord add webhook])")
+    for h in hooks:
+        note = f"   (from {DISCORD_ENV})" if h["source"] == "env" else ""
+        print(f"  [webhook] {_hook_desc(h)}{note}")
+    for w in warns:
+        print(f"{Fore.YELLOW}[~] {w}{Style.RESET_ALL}")
+    print(f"\n{DISCORD_USAGE}\n")
+
+
+def discord_add_webhook(label: Optional[str]) -> None:
+    hooks, _, fmt = load_discord_hooks()
+    if fmt == "json":
+        print(f"{Fore.YELLOW}[~] {DISCORD_FILE} is in JSON format; edit it by hand "
+              f"(or use the 'LABEL URL' line format).{Style.RESET_ALL}")
+        return
+    labels = {h["label"] for h in hooks}
+    if label is None:
+        n = 1
+        while f"webhook{n}" in labels:
+            n += 1
+        label = f"webhook{n}"
+    elif not DISCORD_LABEL_RE.fullmatch(label) or label in DISCORD_RESERVED:
+        print(f"{Fore.RED}[!] Invalid label. Use a-z, 0-9, '-' and '_' (up to 32 characters); "
+              f"not {', '.join(sorted(DISCORD_RESERVED))}.{Style.RESET_ALL}")
+        return
+    elif label in labels:
+        print(f"{Fore.RED}[!] The label '{label}' already exists.{Style.RESET_ALL}")
+        return
+    try:
+        url = getpass.getpass(
+            f"Webhook URL for '{label}' (input hidden, Enter=cancel): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        print(f"\n{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
+        return
+    if not url:
+        return
+    h = _discord_hook(label, url, "file", None)
+    if h is None:
+        print(f"{Fore.RED}[!] That is not a Discord webhook URL "
+              f"(https://discord.com/api/webhooks/ID/TOKEN, optionally ?thread_id=ID).{Style.RESET_ALL}")
+        return
+    for other in hooks:
+        if (other["id"], other["thread_id"]) == (h["id"], h["thread_id"]):
+            print(f"{Fore.RED}[!] That webhook is already registered as '{other['label']}'.{Style.RESET_ALL}")
+            return
+    lines = _discord_read_lines()
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines.append(f"{label} {url}\n")
+    try:
+        _discord_write(lines)
+    except OSError as e:
+        print(f"{Fore.RED}[!] Could not write {DISCORD_FILE}: {type(e).__name__}.{Style.RESET_ALL}")
+        return
+    print(f"{Fore.GREEN}[OK] Webhook '{label}' added (...{h['token'][-4:]}). "
+          f"The file is owner-only; never commit it.{Style.RESET_ALL}")
+
+
+def discord_remove(label: str) -> None:
+    hooks, _, fmt = load_discord_hooks()
+    h = next((x for x in hooks if x["label"] == label), None)
+    if h is None:
+        print(f"{Fore.YELLOW}[~] No webhook is registered as '{label}'.{Style.RESET_ALL}")
+        return
+    if h["source"] == "env":
+        print(f"{Fore.YELLOW}[~] '{label}' comes from the environment variable {DISCORD_ENV}; "
+              f"unset it instead.{Style.RESET_ALL}")
+        return
+    if fmt == "json":
+        print(f"{Fore.YELLOW}[~] {DISCORD_FILE} is in JSON format; edit it by hand.{Style.RESET_ALL}")
+        return
+    if _ask(f"{Fore.CYAN}[+] Remove '{label}' (...{h['token'][-4:]})? (y/N): {Style.RESET_ALL}").lower() \
+            not in ("y", "yes"):
+        print(f"{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
+        return
+    lines = _discord_read_lines()
+    idx = (h["line"] or 0) - 1
+    if not (0 <= idx < len(lines)):
+        print(f"{Fore.RED}[!] The file changed; try again.{Style.RESET_ALL}")
+        return
+    del lines[idx]
+    try:
+        _discord_write(lines)
+    except OSError as e:
+        print(f"{Fore.RED}[!] Could not write {DISCORD_FILE}: {type(e).__name__}.{Style.RESET_ALL}")
+        return
+    print(f"{Fore.GREEN}[OK] Webhook '{label}' removed.{Style.RESET_ALL}")
+
+
+def _discord_split(text: str, budget: int = DISCORD_CHUNK) -> list[str]:
+    """Cut text into messages Discord accepts: at line boundaries when possible, code fences
+    closed and reopened across the cut, UTF-16 length counted, continuation marker added."""
+    if _u16len(text) <= DISCORD_LIMIT:
+        return [text]
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+
+    def flush() -> None:
+        nonlocal cur, cur_len
+        if cur:
+            chunks.append("\n".join(cur))
+        cur, cur_len = [], 0
+
+    for line in text.split("\n"):
+        ll = _u16len(line)
+        if ll > budget:  # a single very long line: cut it by characters
+            flush()
+            piece, pl = "", 0
+            for ch in line:
+                cl = _u16len(ch)
+                if pl + cl > budget:
+                    chunks.append(piece)
+                    piece, pl = "", 0
+                piece += ch
+                pl += cl
+            if piece:
+                cur, cur_len = [piece], pl
+            continue
+        add = ll + (1 if cur else 0)
+        if cur_len + add > budget:
+            flush()
+            cur, cur_len = [line], ll
+        else:
+            cur.append(line)
+            cur_len += add
+    flush()
+    chunks = [c.strip("\n") for c in chunks if c.strip()]
+    out: list[str] = []
+    inside = False
+    for i, c in enumerate(chunks):
+        fixed = _balance_fences(c, inside)
+        inside ^= (c.count("```") % 2 == 1)
+        if i < len(chunks) - 1:
+            fixed += DISCORD_CONT
+        out.append(fixed)
+    return out
+
+
+def _discord_messages(
+    exs: list[tuple[str, str, str]], picked: list[int], flags: set[str], now: datetime.datetime
+) -> list[dict]:
+    """Messages to post, in order: [{"ex": exchange index, "part": k, "of": m, "text": ...}]."""
+    stamp = now.strftime("%Y-%m-%d %H:%M")
+    out: list[dict] = []
+    for i in picked:
+        question, answer, asker = exs[i]
+        parts = [f"**#{i}** : {asker or username} : {stamp}"]
+        if "bare" not in flags and question:
+            q = question if "full" in flags else _shorten_question(question)
+            parts += [_quote(q), ""]
+        parts.append(answer.rstrip())
+        chunks = _discord_split("\n".join(parts))
+        for k, c in enumerate(chunks, 1):
+            out.append({"ex": i, "part": k, "of": len(chunks), "text": c})
+    return out
+
+
+def _discord_clean(text: str, hook: dict) -> str:
+    for secret in (hook["url"], hook["token"]):
+        text = text.replace(secret, "...")
+    return " ".join(text.split())[:120]
+
+
+def _discord_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _discord_clock() -> float:
+    return time.monotonic()
+
+
+def _retry_after(resp: Any) -> float:
+    try:
+        v = float(resp.json().get("retry_after", 0))
+    except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        v = 0.0
+    if v <= 0:
+        try:
+            v = float(resp.headers.get("Retry-After", 0))
+        except (ValueError, TypeError, AttributeError):
+            v = 0.0
+    return v if v > 0 else 1.0
+
+
+def _discord_post(hook: dict, content: str) -> None:
+    """POST one message to a webhook. Errors never contain the URL or token."""
+    payload = {"content": content, "allowed_mentions": {"parse": []}}  # no @everyone / role pings
+    for attempt in range(DISCORD_RETRY_MAX + 1):
+        try:
+            resp = requests.post(hook["url"], json=payload, timeout=30)
+        except requests.RequestException as e:
+            raise DiscordError(f"network error ({type(e).__name__})") from None
+        if resp.status_code == 429:
+            if attempt >= DISCORD_RETRY_MAX:
+                raise DiscordError(f"rate limited (HTTP 429); gave up after {DISCORD_RETRY_MAX} retries")
+            _discord_sleep(min(_retry_after(resp), DISCORD_RETRY_WAIT_MAX))
+            continue
+        if resp.status_code >= 400:
+            detail = ""
+            try:
+                body = resp.json()
+                detail = str(body.get("message", "")) if isinstance(body, dict) else ""
+            except (ValueError, json.JSONDecodeError):
+                detail = resp.text or ""
+            raise DiscordError(f"HTTP {resp.status_code}: {_discord_clean(detail, hook)}".rstrip(": "))
+        return
+
+
+def _discord_deliver(hooks: list[dict], messages: list[dict]) -> dict:
+    """Send every message to every webhook. Posts to different webhooks follow each other
+    at once; two posts to the same webhook ID are at least DISCORD_MESSAGE_INTERVAL apart.
+    A webhook that fails stops receiving; the others carry on."""
+    status = {h["label"]: {"sent": 0, "failed": None} for h in hooks}
+    last: dict[str, float] = {}
+    total = len(messages)
+    interrupted = False
+    try:
+        for mi, m in enumerate(messages, 1):
+            marks: list[str] = []
+            for h in hooks:
+                st = status[h["label"]]
+                if st["failed"]:
+                    continue
+                if h["id"] in last:
+                    remain = last[h["id"]] + DISCORD_MESSAGE_INTERVAL - _discord_clock()
+                    if remain > 0:
+                        _discord_sleep(remain)
+                try:
+                    _discord_post(h, m["text"])
+                    st["sent"] += 1
+                    marks.append(f"{Fore.GREEN}{h['label']}{Style.RESET_ALL}")
+                except DiscordError as ex:
+                    st["failed"] = {"exchange": m["ex"], "message": mi, "reason": str(ex)}
+                    marks.append(f"{Fore.RED}{h['label']} FAILED{Style.RESET_ALL}")
+                finally:
+                    last[h["id"]] = _discord_clock()
+            print(f"  {mi}/{total}  " + "  ".join(marks))
+            if all(st["failed"] for st in status.values()):
+                break
+    except KeyboardInterrupt:
+        interrupted = True
+    return {"status": status, "total": total, "interrupted": interrupted}
+
+
+def _discord_report(result: dict) -> None:
+    total = result["total"]
+    if result["interrupted"]:
+        print(f"{Fore.YELLOW}[~] Interrupted.{Style.RESET_ALL}")
+    for label, st in result["status"].items():
+        if st["failed"]:
+            f = st["failed"]
+            print(f"{Fore.RED}[!] {label}: stopped at exchange #{f['exchange']} "
+                  f"(message {f['message']}/{total}): {f['reason']} - {st['sent']}/{total} sent{Style.RESET_ALL}")
+        elif st["sent"] == total:
+            print(f"{Fore.GREEN}[OK] {label}: {st['sent']}/{total} sent{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}[~] {label}: {st['sent']}/{total} sent{Style.RESET_ALL}")
+
+
+def _discord_targets(names: list[str], hooks: list[dict]) -> tuple[list[dict], Optional[str]]:
+    if not names:
+        return list(hooks), None
+    chosen: list[dict] = []
+    for t in names:
+        if t in ("all", "webhook"):
+            group = list(hooks)
+        elif t == "bot":
+            return [], "Bot destinations are not available yet."
+        else:
+            group = [h for h in hooks if h["label"] == t]
+            if not group:
+                return [], f"Unknown destination '{t}'. Registered: {', '.join(h['label'] for h in hooks)}."
+        for h in group:
+            if h not in chosen:
+                chosen.append(h)
+    return chosen, None
+
+
+def _estimate_seconds(hooks: list[dict], n_messages: int) -> int:
+    per_id: dict[str, int] = {}
+    for h in hooks:
+        per_id[h["id"]] = per_id.get(h["id"], 0) + n_messages
+    worst = max(per_id.values()) if per_id else 0
+    return int(round(max(worst - 1, 0) * DISCORD_MESSAGE_INTERVAL))
+
+
+def discord_send(tokens: list[str]) -> None:
+    exs = _exchanges()
+    if not exs:
+        print(f"{Fore.YELLOW}[~] No conversation to send.{Style.RESET_ALL}")
+        return
+    if tokens.count("to") > 1:
+        print(f"{Fore.RED}[!] Use 'to' only once.{Style.RESET_ALL}\n{DISCORD_USAGE}")
+        return
+    left, right = tokens, []
+    if "to" in tokens:
+        i = tokens.index("to")
+        left, right = tokens[:i], tokens[i + 1:]
+        if not right:
+            print(f"{Fore.RED}[!] Give at least one destination after 'to'.{Style.RESET_ALL}\n{DISCORD_USAGE}")
+            return
+    if not any(_EXPORT_INDEX_RE.match(t) or _EXPORT_SLICE_RE.match(t) for t in left):
+        print(f"{Fore.RED}[!] Give an index or slice (e.g. -1, 2:5, or : for everything).{Style.RESET_ALL}\n{DISCORD_USAGE}")
+        return
+    parsed, err = _parse_export_args(" ".join(left), len(exs))
+    if err or parsed is None or parsed.get("list"):
+        print(f"{Fore.RED}[!] {err or 'Invalid arguments.'}{Style.RESET_ALL}\n{DISCORD_USAGE}")
+        return
+    picked = parsed["picked"]
+    if not picked:
+        print(f"{Fore.YELLOW}[~] Nothing matches that selection.{Style.RESET_ALL}")
+        return
+    hooks, warns, _ = load_discord_hooks()
+    for w in warns:
+        print(f"{Fore.YELLOW}[~] {w}{Style.RESET_ALL}")
+    if not hooks:
+        print(f"{Fore.YELLOW}[~] No webhook registered. Add one with [discord add webhook].{Style.RESET_ALL}")
+        return
+    targets, terr = _discord_targets(right, hooks)
+    if terr:
+        print(f"{Fore.RED}[!] {terr}{Style.RESET_ALL}")
+        return
+    messages = _discord_messages(exs, picked, parsed["flags"], datetime.datetime.now())
+    if len(messages) > DISCORD_MAX_MESSAGES:
+        print(f"{Fore.RED}[!] That needs {len(messages)} messages per webhook (limit {DISCORD_MAX_MESSAGES}). "
+              f"Choose fewer exchanges.{Style.RESET_ALL}")
+        return
+    chars = sum(len(m["text"]) for m in messages)
+    names = ", ".join(h["label"] for h in targets)
+    print(f"\n{Fore.YELLOW}Send {len(picked)} exchange(s) -> {len(targets)} webhook(s): {names}{Style.RESET_ALL}")
+    print(f"  {len(messages)} message(s) each ({len(messages) * len(targets)} posts in total), "
+          f"about {chars:,} characters")
+    secs = _estimate_seconds(targets, len(messages))
+    print(f"  Takes about {secs} seconds ({DISCORD_MESSAGE_INTERVAL:g} s between messages to the same "
+          f"webhook). Ctrl+C stops it.")
+    print("  First message:")
+    first = messages[0]["text"].split("\n")
+    for ln in first[:3]:
+        print(f"    {ln[:80]}{'…' if len(ln) > 80 else ''}")
+    if len(first) > 3:
+        print(f"    … ({len(first) - 3} more line(s))")
+    if _ask(f"{Fore.CYAN}[+] Send? (Y/n): {Style.RESET_ALL}").lower() not in ("", "y", "yes"):
+        print(f"{Fore.YELLOW}[~] Cancelled; nothing was sent.{Style.RESET_ALL}")
+        return
+    _discord_report(_discord_deliver(targets, messages))
+
+
+def discord_command(norm: str) -> None:
+    """Dispatch '[discord ...]' (norm is the lower-cased, whitespace-normalised command)."""
+    if not norm.endswith("]"):
+        print(f"{Fore.YELLOW}[~] {DISCORD_USAGE}{Style.RESET_ALL}")
+        return
+    args = norm[1:-1].split()[1:]
+    if not args:
+        discord_status()
+    elif args == ["list"]:
+        exs = _exchanges()
+        if exs:
+            _print_exchange_list(exs)
+        else:
+            print(f"{Fore.YELLOW}[~] No conversation yet.{Style.RESET_ALL}")
+    elif args[0] == "add":
+        if args[1:2] == ["webhook"] and len(args) <= 3:
+            discord_add_webhook(args[2] if len(args) == 3 else None)
+        elif args[1:2] == ["bot"]:
+            print(f"{Fore.YELLOW}[~] Bot destinations are not available yet.{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}[~] Usage: [discord add webhook [LABEL]]{Style.RESET_ALL}")
+    elif args[0] == "rm":
+        if len(args) == 2:
+            discord_remove(args[1])
+        else:
+            print(f"{Fore.YELLOW}[~] Usage: [discord rm LABEL]{Style.RESET_ALL}")
+    else:
+        discord_send(args)
+
 # ============ IMPORT ============
 def import_file() -> None:
     raw_path = _ask(f"{Fore.CYAN}[+] File path: {Style.RESET_ALL}")
@@ -3097,6 +3672,7 @@ NekoChat Commands:
   [key]         — Set or remove API keys for services that need one
   [system]      — Set the GLOBAL system prompt (shared by every session)
   [system session] — Set a prompt for the current session only (added after the global one)
+  [discord]     — Post chosen exchanges to Discord webhooks: [discord -1], [discord 2:5 bare to NAME], add webhook, rm NAME
   [plugin]      — Reusable prompts: [plugin] list, show NAME, on NAME [global], off NAME, new NAME
   [name]        — Change your display name (past messages keep the name they were sent with)
   [config]      — Set temperature / max_tokens
@@ -3209,6 +3785,9 @@ def main() -> None:
                 norm = " ".join(cmd.split())
                 if norm == "[system session]":
                     set_session_prompt()
+                    continue
+                if norm == "[discord]" or norm.startswith("[discord "):
+                    discord_command(norm)
                     continue
                 if norm == "[plugin]" or norm == "[plugins]" or norm.startswith("[plugin "):
                     plugin_command("[plugin]" if norm == "[plugins]" else norm)
