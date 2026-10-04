@@ -1,4 +1,4 @@
-# NekoChat 使い方ガイド（v2.8.16）
+# NekoChat 使い方ガイド（v2.8.17）
 
 NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
 
@@ -113,7 +113,7 @@ Services that need an API key:
 | サービス | 環境変数 | 補足 |
 |----------|----------|------|
 | pollinations | なし | 匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402） |
-| pollinations-key | `POLLINATIONS_API_KEY` | `enter.pollinations.ai` でキーを取得 |
+| pollinations-key | `POLLINATIONS_API_KEY` | `https://enter.pollinations.ai/keys` でキーを取得。モデルの一覧は、キーなしでも読めます |
 | nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
 | mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
 | cloudflare | `CLOUDFLARE_API_TOKEN` | アカウントID（`CLOUDFLARE_ACCOUNT_ID`）も必要。`[service]` が聞いて `config.json` に保存します |
@@ -397,6 +397,7 @@ Taro[default] : [export]
 [discord 2:5 rev bare full]        番号・範囲・フラグは [export] と同じ（bare = 回答のみ）
 [discord -3: to main backup]       送信先をラベルで指定（省略時は、登録した全部）
 [discord -3: to webhook]           種類で指定（全部の Webhook）
+[discord auto on -3: bare to main] 自動で送る（新しいやり取りが3件たまるたびに。下の「自動モード」を参照）
 ```
 
 番号か範囲の指定は、必須です（`:` は「すべて」）。Webhook は、Discord のチャンネルの設定（連携サービス → ウェブフック）で作ります。既存のスレッドへ送るときは、URL の末尾に `?thread_id=スレッドのID` を付けます。
@@ -410,6 +411,25 @@ Taro[default] : [export]
 - 本文中の `@everyone` やロールのメンションでは、通知が飛びません（`allowed_mentions` を空にしています）。
 - **同じ Webhook（同じ Webhook ID）への2つの投稿は、前の投稿が終わってから3秒以上**あけます。別の Webhook へは、続けて送ります。このため、長い送信は、（メッセージ数 − 1）× 3秒に、通信の時間を足した程度かかります。
 - HTTP 429 のときは、`retry_after`（最大60秒）だけ待って、最大5回まで再送します。失敗した Webhook への送信は、そこで止めて、ほかの Webhook には続けます。結果は、Webhook ごとに報告されます（`main: 8/8 sent`、または止まった場所と理由）。Ctrl+C で、安全に止まり、どこまで送ったかを報告します。自動の再送は、しません。
+
+### 自動モード
+
+`[discord auto on -3:]` は、**自動で送る**モードです。新しいやり取りが3件たまるたびに、最新の3件を、まとめて送ります。`-1:`（省略時）は、返信のたびに送ります。範囲の書き方は、末尾から数える Python のスライスと同じで（`-3:` は最後の3件）、受け付けるのは `-N:`（N は1〜20）だけです。フラグと送信先は、手動の送信と同じ書き方です。
+
+```
+[discord auto on [-N:] [bare] [full] [to ラベル...]]   入れる（1回だけ確認します）
+[discord auto off]                                     止める
+[discord auto flush]                                   溜まっている分を、すぐ送る
+[discord auto]                                         状態を表示
+```
+
+- **セッションごとで、メモリの中だけ**です。起動時はオフで、保存されず、入れたあとのやり取りだけを数えます。入れている間は、プロンプトに `(discord 2/3)`（溜まっている数 / 窓の大きさ）が出ます。
+- セッションを離れる（`[switch]`、`[new]`、`[load]`）か、終了するときは、`Send N pending exchange(s) now? (Y/n)` と聞いてから、切れます。Enter で送ります。
+- 自動モードは、**送るたびには聞きません**。入れるときの画面に、送る内容が書かれています。システムプロンプトとプラグインの本文は、送りませんが、`[import]` で読んだファイルは、質問の引用に出ます。ファイルを扱うときは、`bare`（回答のみ）を使ってください。
+- 本文に、NekoChat が知っている秘密（API キー、Webhook の URL とトークン）があれば、`[redacted]` に置き換えて送ります（手動の送信も同じです）。
+- `[undo]`、`[clear]`、`[load]` のあとも、数え方が狂いません。送る前に `[undo]` したやり取りは、そのまま消えます。送り済みのものは、Discord に残ります。
+- 30メッセージを超える束は、送らずに止めて、手動で送るコマンドを表示します。失敗した Webhook は、そのセッションの間、止めて、再送のコマンドを表示します。全部が止まったとき、送信中に Ctrl+C を押したときは、モードが切れます。
+- 同じ Webhook への3秒の間隔は、送信をまたいで守ります（自動のすぐあとの、手動の送信も同じです）。
 
 いまは、Webhook だけに対応しています。Bot トークンでスレッドを作る方式は、`[discord add bot]` として、あとで追加する予定です。
 
@@ -528,7 +548,7 @@ Bye bye, Taro!
 | `[key]` | APIキーの設定・削除 |
 | `[system]` | 全体のシステムプロンプトを設定（全セッション共通） |
 | `[system session]` | 今のセッションだけのシステムプロンプトを設定 |
-| `[discord]` | 選んだやり取りを Discord の Webhook へ送る |
+| `[discord]` | 選んだやり取りを Discord の Webhook へ送る（`[discord auto on -3:]` で自動） |
 | `[plugin]` | 定型プロンプト（プラグイン）の一覧・表示・付け外し・作成 |
 | `[config]` | temperature / max_tokens を調整 |
 | `[stream]` | ストリーミング ON/OFF 切り替え |

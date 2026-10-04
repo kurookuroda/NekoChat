@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NekoChat v2.8.16 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.17 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>NekoChat v2.8.16</h1>
+  <h1>NekoChat v2.8.17</h1>
   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
@@ -317,7 +317,7 @@ a:hover { text-decoration: underline; }
   <table>
     <tr><th>サービス</th><th>環境変数</th><th>補足</th></tr>
     <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402）</td></tr>
-    <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>enter.pollinations.ai</code> でキーを取得</td></tr>
+    <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>https://enter.pollinations.ai/keys</code> でキーを取得。モデルの一覧は、キーなしでも読めます</td></tr>
     <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
     <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
     <tr><td>cloudflare</td><td><code>CLOUDFLARE_API_TOKEN</code></td><td>アカウントID（<code>CLOUDFLARE_ACCOUNT_ID</code>）も必要。<code>[service]</code> が聞いて <code>config.json</code> に保存します</td></tr>
@@ -593,6 +593,7 @@ a:hover { text-decoration: underline; }
 <span class="out">[discord 2:5 rev bare full]        番号・範囲・フラグは [export] と同じ（bare = 回答のみ）</span>
 <span class="out">[discord -3: to main backup]       送信先をラベルで指定（省略時は、登録した全部）</span>
 <span class="out">[discord -3: to webhook]           種類で指定（全部の Webhook）</span>
+<span class="out">[discord auto on -3: bare to main] 自動で送る（新しいやり取りが3件たまるたびに。下の「自動モード」を参照）</span>
   </div>
   <p>番号か範囲の指定は、必須です（<code>:</code> は「すべて」）。Webhook は、Discord のチャンネルの設定（連携サービス → ウェブフック）で作ります。既存のスレッドへ送るときは、URL の末尾に <code>?thread_id=スレッドのID</code> を付けます。</p>
   <div class="note">
@@ -611,6 +612,23 @@ a:hover { text-decoration: underline; }
     <li>本文中の <code>@everyone</code> やロールのメンションでは、通知が飛びません（<code>allowed_mentions</code> を空にしています）。</li>
     <li><strong>同じ Webhook（同じ Webhook ID）への2つの投稿は、前の投稿が終わってから3秒以上</strong>あけます。別の Webhook へは、続けて送ります。このため、長い送信は、（メッセージ数 − 1）× 3秒に、通信の時間を足した程度かかります。</li>
     <li>HTTP 429 のときは、<code>retry_after</code>（最大60秒）だけ待って、最大5回まで再送します。失敗した Webhook への送信は、そこで止めて、ほかの Webhook には続けます。結果は、Webhook ごとに報告されます。Ctrl+C で、安全に止まり、どこまで送ったかを報告します。自動の再送は、しません。</li>
+  </ul>
+  <h3>自動モード</h3>
+  <p><code>[discord auto on -3:]</code> は、<strong>自動で送る</strong>モードです。新しいやり取りが3件たまるたびに、最新の3件を、まとめて送ります。<code>-1:</code>（省略時）は、返信のたびに送ります。範囲の書き方は、末尾から数える Python のスライスと同じで（<code>-3:</code> は最後の3件）、受け付けるのは <code>-N:</code>（N は1〜20）だけです。フラグと送信先は、手動の送信と同じ書き方です。</p>
+  <div class="terminal">
+<span class="out">[discord auto on [-N:] [bare] [full] [to ラベル...]]   入れる（1回だけ確認します）</span>
+<span class="out">[discord auto off]                                     止める</span>
+<span class="out">[discord auto flush]                                   溜まっている分を、すぐ送る</span>
+<span class="out">[discord auto]                                         状態を表示</span>
+  </div>
+  <ul>
+    <li><strong>セッションごとで、メモリの中だけ</strong>です。起動時はオフで、保存されず、入れたあとのやり取りだけを数えます。入れている間は、プロンプトに <code>(discord 2/3)</code>（溜まっている数 / 窓の大きさ）が出ます。</li>
+    <li>セッションを離れる（<code>[switch]</code>、<code>[new]</code>、<code>[load]</code>）か、終了するときは、<code>Send N pending exchange(s) now? (Y/n)</code> と聞いてから、切れます。Enter で送ります。</li>
+    <li>自動モードは、<strong>送るたびには聞きません</strong>。入れるときの画面に、送る内容が書かれています。システムプロンプトとプラグインの本文は、送りませんが、<code>[import]</code> で読んだファイルは、質問の引用に出ます。ファイルを扱うときは、<code>bare</code>（回答のみ）を使ってください。</li>
+    <li>本文に、NekoChat が知っている秘密（API キー、Webhook の URL とトークン）があれば、<code>[redacted]</code> に置き換えて送ります（手動の送信も同じです）。</li>
+    <li><code>[undo]</code>、<code>[clear]</code>、<code>[load]</code> のあとも、数え方が狂いません。送る前に <code>[undo]</code> したやり取りは、そのまま消えます。送り済みのものは、Discord に残ります。</li>
+    <li>30メッセージを超える束は、送らずに止めて、手動で送るコマンドを表示します。失敗した Webhook は、そのセッションの間、止めて、再送のコマンドを表示します。全部が止まったとき、送信中に Ctrl+C を押したときは、モードが切れます。</li>
+    <li>同じ Webhook への3秒の間隔は、送信をまたいで守ります（自動のすぐあとの、手動の送信も同じです）。</li>
   </ul>
   <p>いまは、Webhook だけに対応しています。Bot トークンでスレッドを作る方式は、<code>[discord add bot]</code> として、あとで追加する予定です。</p>
 </section>
@@ -726,7 +744,7 @@ a:hover { text-decoration: underline; }
     <tr><td><code>[key]</code></td><td>APIキーの設定・削除</td></tr>
     <tr><td><code>[system]</code></td><td>全体のシステムプロンプトを設定（全セッション共通）</td></tr>
     <tr><td><code>[system session]</code></td><td>今のセッションだけのシステムプロンプトを設定</td></tr>
-    <tr><td><code>[discord]</code></td><td>選んだやり取りを Discord の Webhook へ送る</td></tr>
+    <tr><td><code>[discord]</code></td><td>選んだやり取りを Discord の Webhook へ送る（<code>[discord auto on -3:]</code> で自動）</td></tr>
     <tr><td><code>[plugin]</code></td><td>定型プロンプト（プラグイン）の一覧・表示・付け外し・作成</td></tr>
     <tr><td><code>[config]</code></td><td>temperature / max_tokens を調整</td></tr>
     <tr><td><code>[stream]</code></td><td>ストリーミング ON/OFF 切りえ</td></tr>

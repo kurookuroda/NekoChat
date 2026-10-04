@@ -1,8 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NekoChat v2.8.16 — Clean CLI chat client for several LLM services
+NekoChat v2.8.17 — Clean CLI chat client for several LLM services
 (the file is still named pollenchat.py)
+
+Changes in v2.8.17:
+  - Discord auto mode: [discord auto on -3:] posts the newest exchanges by itself
+    each time 3 new ones are pending; -1: (the default) after every reply. The
+    window is written like a Python slice counted from the end (-3: = the last
+    three); only -N: (N = 1..20) is accepted. Flags and "to" work as in the
+    manual command: [discord auto on -3: bare to main]. [discord auto off],
+    [discord auto flush] (send what is pending now), [discord auto] (status).
+    It is per session, kept in memory only (off at start-up), counts only
+    exchanges made after it was switched on, and shows (discord 2/3) in the
+    prompt. Leaving the session ([switch], [new], [load]) or quitting turns it
+    off after asking "Send N pending exchange(s) now? (Y/n)". [undo] / [clear]
+    / [load] never leave removed exchanges counted as sent (posted messages
+    cannot be unsent). A batch needing more than 30 messages is held back with
+    the manual command to send it; a webhook that fails is paused for the
+    session (resend command shown); Ctrl+C turns the mode off.
+  - Posts to the same webhook stay 3 s apart across consecutive sends (also a
+    manual send right after an automatic one). Known secrets (API keys, webhook
+    URLs/tokens) found in the text are replaced by [redacted] in every Discord
+    send.
+  - pollinations-key: the model list can be read without a key (the catalogue is
+    public); key errors point to https://enter.pollinations.ai/keys (and to the
+    NVIDIA / Mistral key pages).
 
 Changes in v2.8.16:
   - [discord ...] posts chosen exchanges to Discord through webhooks. The
@@ -281,7 +304,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "label": "PollinationsAI (API key)",
         "chat_url": "https://gen.pollinations.ai/v1/chat/completions",
         "models_url": "https://gen.pollinations.ai/v1/models",
+        "models_public": True,   # the catalogue can be read without a key
         "key_env": "POLLINATIONS_API_KEY",
+        "key_url": "https://enter.pollinations.ai/keys",
         "rate_hint": "PollinationsAI rate limit or Pollen balance reached. Wait a moment and retry.",
     },
     "nvidia": {
@@ -289,6 +314,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
         "models_url": "https://integrate.api.nvidia.com/v1/models",
         "key_env": "NVIDIA_API_KEY",
+        "key_url": "https://build.nvidia.com",
         "rate_hint": "NVIDIA rate limit reached. Wait a moment and retry.",
     },
     "mistral": {
@@ -296,6 +322,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "chat_url": "https://api.mistral.ai/v1/chat/completions",
         "models_url": "https://api.mistral.ai/v1/models",
         "key_env": "MISTRAL_API_KEY",
+        "key_url": "https://console.mistral.ai",
         "rate_hint": "Mistral free-tier rate limit reached. Wait a moment and retry.",
     },
     "cloudflare": {
@@ -469,6 +496,10 @@ def _expand_env(text: str, extra: Optional[dict[str, str]] = None) -> tuple[str,
         return val
     return re.sub(r"\$\{([A-Za-z0-9_]+)\}", repl, text), missing
 
+def _key_hint(spec: dict) -> str:
+    return f"; get one at {spec['key_url']}" if spec.get("key_url") else ""
+
+
 def resolve_request(full_model: str) -> Optional[tuple[str, str, dict[str, str]]]:
     """Return (url, model_id, extra_headers) for the model, or None after printing why not."""
     provider, model_id = split_model(full_model)
@@ -483,7 +514,7 @@ def resolve_request(full_model: str) -> Optional[tuple[str, str, dict[str, str]]
         key = get_api_key(provider)
         if not key:
             print(f"{Fore.RED}[!] {spec['label']}: API key not set "
-                  f"(use [key] or set {spec['key_env']}){Style.RESET_ALL}")
+                  f"(use [key] or set {spec['key_env']}{_key_hint(spec)}){Style.RESET_ALL}")
             return None
         headers["Authorization"] = f"Bearer {key}"
     return url, model_id, headers
@@ -530,7 +561,7 @@ BANNER = r"""
   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
 /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
-                                          v2.8.16
+                                          v2.8.17
         Clean & Harmless — Multi-service LLM chat
 """
 
@@ -1010,14 +1041,15 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "NekoChat/2.8.16"}
+    headers = {"User-Agent": "NekoChat/2.8.17"}
     if spec.get("key_env"):
         key = get_api_key(provider)
-        if not key:
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        elif not spec.get("models_public"):
             print(f"{Fore.RED}[!] {spec['label']}: API key not set "
-                  f"(use [key] or set {spec['key_env']}){Style.RESET_ALL}")
+                  f"(use [key] or set {spec['key_env']}{_key_hint(spec)}){Style.RESET_ALL}")
             return None
-        headers["Authorization"] = f"Bearer {key}"
     try:
         r = requests.get(url, headers=headers, timeout=10)
         r.raise_for_status()
@@ -2060,6 +2092,8 @@ def switch_session() -> None:
             return
         name = choice
 
+    if name != _current_session:
+        _discord_auto_leave(_current_session)
     _current_session = name
     _last_assistant_text = _session_last_text.get(name, "")
     print(
@@ -2078,10 +2112,13 @@ def new_session() -> None:
         print(
             f"{Fore.YELLOW}[!] Session '{name}' already exists. Switched to it.{Style.RESET_ALL}"
         )
+        if name != _current_session:
+            _discord_auto_leave(_current_session)
         _current_session = name
         _last_assistant_text = _session_last_text.get(name, "")
         return
     _sessions[name] = []
+    _discord_auto_leave(_current_session)
     _current_session = name
     _last_assistant_text = ""
     print(f"{Fore.GREEN}[OK] Created and switched to '{name}'{Style.RESET_ALL}")
@@ -2105,6 +2142,8 @@ def rename_session() -> None:
         _session_prompts[new] = _session_prompts.pop(old)
     if old in _session_plugins:
         _session_plugins[new] = _session_plugins.pop(old)
+    if old in _discord_auto:
+        _discord_auto[new] = _discord_auto.pop(old)
     _current_session = new
 
     # Save new session BEFORE removing old file so a crash won't lose data
@@ -2145,6 +2184,7 @@ def delete_session() -> None:
     _session_last_text.pop(name, None)
     _session_prompts.pop(name, None)
     _session_plugins.pop(name, None)
+    _discord_auto.pop(name, None)
     # Also delete the file
     fname = _safe_session_name(name)
     path = os.path.join(SESSION_DIR, fname)
@@ -2163,7 +2203,10 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
     try:
         data = resp.json()
         if isinstance(data, dict) and data.get("error"):
-            return str(data["error"])[:200]
+            err = data["error"]
+            if isinstance(err, dict):  # e.g. {"error": {"message": "...", "code": "UNAUTHORIZED"}}
+                err = err.get("message") or err.get("code") or err
+            return str(err)[:200]
     except ValueError:
         pass
     text = (resp.text or "").strip()
@@ -2197,7 +2240,7 @@ def send_chat(
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "NekoChat/2.8.16",
+        "User-Agent": "NekoChat/2.8.17",
         **auth_headers,
     }
 
@@ -2220,7 +2263,7 @@ def send_chat(
             detail = f" — {reason}" if reason else ""
             print(
                 f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}. "
-                f"Check {spec['key_env']}.{Style.RESET_ALL}"
+                f"Check {spec['key_env']}{_key_hint(spec)}.{Style.RESET_ALL}"
             )
         elif code is not None and code >= 500:
             print(f"{Fore.RED}[!] HTTP {code} from server: {reason or '(no details)'}{Style.RESET_ALL}")
@@ -2405,6 +2448,11 @@ def chat_once(user_input: str) -> bool:
     _last_assistant_text = assistant_text
     _session_last_text[_current_session] = assistant_text
     _save_session_atomic(_current_session)  # auto-save after every exchange
+    try:
+        _discord_auto_after_reply()
+    except Exception as e:  # a delivery problem must never break the chat itself
+        print(f"{Fore.YELLOW}[~] discord auto mode: {type(e).__name__}; this exchange may not have "
+              f"been sent.{Style.RESET_ALL}")
     return True
 
 # ============ RENDER LAST RESPONSE ============
@@ -2555,9 +2603,9 @@ EXPORT_USAGE = (
 )
 
 
-def _exchanges() -> list[tuple[str, str, str]]:
-    """(question, answer, asker name) of the current session, oldest first."""
-    history = _sessions[_current_session]
+def _exchanges(session: Optional[str] = None) -> list[tuple[str, str, str]]:
+    """(question, answer, asker name) of a session (default: the current one), oldest first."""
+    history = _sessions.get(session if session is not None else _current_session, [])
     result: list[tuple[str, str, str]] = []
     for i, msg in enumerate(history):
         if msg["role"] != "assistant":
@@ -2769,7 +2817,7 @@ DISCORD_CONT = "\n(続く...)"
 DISCORD_RETRY_MAX = 5            # re-sends after HTTP 429
 DISCORD_RETRY_WAIT_MAX = 60.0    # longest single wait for a 429
 DISCORD_MAX_MESSAGES = 100       # refuse sends needing more messages than this
-DISCORD_RESERVED = frozenset({"webhook", "bot", "all", "to", "list", "add", "rm", "env"})
+DISCORD_RESERVED = frozenset({"webhook", "bot", "all", "to", "list", "add", "rm", "env", "auto", "on", "off"})
 DISCORD_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 _DISCORD_URL_RE = re.compile(
     r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/"
@@ -2780,7 +2828,9 @@ DISCORD_USAGE = (
     "       [discord <index|slice> [rev] [bare] [full] [to LABEL... | webhook | all]]\n"
     "  index : 0 = oldest, -1 = latest   e.g. [discord -1]  [discord 2:5]  [discord -3: to main]\n"
     "  rev   : reverse the order         bare : answers only      full : do not shorten long questions\n"
-    "  to    : destinations (default: every registered webhook)"
+    "  to    : destinations (default: every registered webhook)\n"
+    "  auto  : [discord auto on -3: [bare] [full] [to LABEL...]]  post by itself whenever 3 new exchanges\n"
+    "          are pending (-1: = after every reply) | [discord auto off] | [discord auto flush] | [discord auto]"
 )
 
 
@@ -3069,12 +3119,45 @@ def _discord_split(text: str, budget: int = DISCORD_CHUNK) -> list[str]:
     return out
 
 
+def _known_secrets() -> list[str]:
+    """Secret values NekoChat itself knows (API keys, webhook URLs and tokens), longest first."""
+    vals: set[str] = set()
+    for prov, spec in PROVIDERS.items():
+        if spec.get("key_env"):
+            k = get_api_key(prov)
+            if k:
+                vals.add(k)
+    for h in load_discord_hooks()[0]:
+        vals.update((h["url"], h["token"]))
+    return sorted((v for v in vals if len(v) >= 8), key=len, reverse=True)
+
+
+def _redact(text: str, secrets: Any) -> tuple[str, int]:
+    count = 0
+    for sec in secrets:
+        c = text.count(sec)
+        if c:
+            text = text.replace(sec, "[redacted]")
+            count += c
+    return text, count
+
+
 def _discord_messages(
     exs: list[tuple[str, str, str]], picked: list[int], flags: set[str], now: datetime.datetime
 ) -> list[dict]:
     """Messages to post, in order: [{"ex": exchange index, "part": k, "of": m, "text": ...}]."""
+    return _discord_build(exs, picked, flags, now)[0]
+
+
+def _discord_build(
+    exs: list[tuple[str, str, str]], picked: list[int], flags: set[str], now: datetime.datetime,
+    secrets: Any = (),
+) -> tuple[list[dict], int]:
+    """Like _discord_messages, but known secrets are replaced by [redacted].
+    Returns (messages, number of values hidden)."""
     stamp = now.strftime("%Y-%m-%d %H:%M")
     out: list[dict] = []
+    hidden = 0
     for i in picked:
         question, answer, asker = exs[i]
         parts = [f"**#{i}** : {asker or username} : {stamp}"]
@@ -3082,10 +3165,12 @@ def _discord_messages(
             q = question if "full" in flags else _shorten_question(question)
             parts += [_quote(q), ""]
         parts.append(answer.rstrip())
-        chunks = _discord_split("\n".join(parts))
+        text, c = _redact("\n".join(parts), secrets)
+        hidden += c
+        chunks = _discord_split(text)
         for k, c in enumerate(chunks, 1):
             out.append({"ex": i, "part": k, "of": len(chunks), "text": c})
-    return out
+    return out, hidden
 
 
 def _discord_clean(text: str, hook: dict) -> str:
@@ -3139,12 +3224,18 @@ def _discord_post(hook: dict, content: str) -> None:
         return
 
 
-def _discord_deliver(hooks: list[dict], messages: list[dict]) -> dict:
+_discord_last: dict[str, float] = {}   # webhook ID -> when its last post finished (shared by all sends)
+
+
+def _discord_deliver(
+    hooks: list[dict], messages: list[dict], last: Optional[dict[str, float]] = None, progress: bool = True
+) -> dict:
     """Send every message to every webhook. Posts to different webhooks follow each other
     at once; two posts to the same webhook ID are at least DISCORD_MESSAGE_INTERVAL apart.
     A webhook that fails stops receiving; the others carry on."""
     status = {h["label"]: {"sent": 0, "failed": None} for h in hooks}
-    last: dict[str, float] = {}
+    if last is None:
+        last = _discord_last   # also spaces a manual send right after an automatic one
     total = len(messages)
     interrupted = False
     try:
@@ -3167,7 +3258,8 @@ def _discord_deliver(hooks: list[dict], messages: list[dict]) -> dict:
                     marks.append(f"{Fore.RED}{h['label']} FAILED{Style.RESET_ALL}")
                 finally:
                     last[h["id"]] = _discord_clock()
-            print(f"  {mi}/{total}  " + "  ".join(marks))
+            if progress:
+                print(f"  {mi}/{total}  " + "  ".join(marks))
             if all(st["failed"] for st in status.values()):
                 break
     except KeyboardInterrupt:
@@ -3253,7 +3345,11 @@ def discord_send(tokens: list[str]) -> None:
     if terr:
         print(f"{Fore.RED}[!] {terr}{Style.RESET_ALL}")
         return
-    messages = _discord_messages(exs, picked, parsed["flags"], datetime.datetime.now())
+    messages, hidden = _discord_build(exs, picked, parsed["flags"], datetime.datetime.now(),
+                                      _known_secrets())
+    if hidden:
+        print(f"{Fore.YELLOW}[~] Hid {hidden} known secret value(s) (API keys / webhook URLs) "
+              f"before sending.{Style.RESET_ALL}")
     if len(messages) > DISCORD_MAX_MESSAGES:
         print(f"{Fore.RED}[!] That needs {len(messages)} messages per webhook (limit {DISCORD_MAX_MESSAGES}). "
               f"Choose fewer exchanges.{Style.RESET_ALL}")
@@ -3278,6 +3374,256 @@ def discord_send(tokens: list[str]) -> None:
     _discord_report(_discord_deliver(targets, messages))
 
 
+# ============ DISCORD AUTO MODE ============
+# [discord auto on -3:] posts the newest exchanges by itself each time N new ones have piled
+# up (-1: = after every reply). It is per session, kept in memory only (off at start-up), and
+# only counts exchanges that happen after it was switched on. Leaving the session or quitting
+# turns it off (pending exchanges can be sent first). Same webhooks, formatting, pacing and
+# safety rules as the manual [discord ...] send, but without a confirmation per send.
+DISCORD_AUTO_MAX_EVERY = 20
+DISCORD_AUTO_MAX_MESSAGES = 30   # a batch needing more messages is held back, not sent
+_AUTO_WINDOW_RE = re.compile(r"-(\d+):")
+_discord_auto: dict[str, dict] = {}
+
+
+def _manual_cmd(lo: int, hi: int, label: Optional[str] = None) -> str:
+    """The manual command that sends exchanges lo..hi-1 (to one destination)."""
+    return f"[discord {lo}:{hi}" + (f" to {label}" if label else "") + "]"
+
+
+def _auto_pending(name: str) -> list[int]:
+    st = _discord_auto.get(name)
+    if not st:
+        return []
+    n = len(_exchanges(name))
+    return list(range(min(st["sent_upto"], n), n))
+
+
+def _discord_auto_clamp(name: Optional[str] = None) -> None:
+    """The history got shorter ([undo], [clear], [load]): never count removed exchanges as sent."""
+    name = name or _current_session
+    st = _discord_auto.get(name)
+    if st:
+        st["sent_upto"] = min(st["sent_upto"], len(_exchanges(name)))
+
+
+def _discord_auto_marker() -> str:
+    st = _discord_auto.get(_current_session)
+    if not st:
+        return ""
+    return (f" {Fore.MAGENTA}(discord {len(_auto_pending(_current_session))}/{st['every']})"
+            f"{Style.RESET_ALL}")
+
+
+def _discord_auto_send(name: str) -> None:
+    """Send everything pending for `name` to its destinations (no confirmation)."""
+    st = _discord_auto[name]
+    exs = _exchanges(name)
+    n = len(exs)
+    first = min(st["sent_upto"], n)
+    picked = list(range(first, n))
+    if not picked:
+        return
+    hooks, _, _ = load_discord_hooks()
+    registered = {h["label"] for h in hooks}
+    for t in st["targets"]:
+        if t not in registered:
+            _warn_once(f"discord-gone:{name}:{t}", f"Destination '{t}' is no longer registered.")
+    active = [h for h in hooks
+              if (not st["targets"] or h["label"] in st["targets"]) and h["label"] not in st["paused"]]
+    if not active:
+        print(f"{Fore.RED}[!] discord: no usable destination left; auto mode is off. Not sent: "
+              f"#{first}-#{n - 1}. Send by hand with {_manual_cmd(first, n)}.{Style.RESET_ALL}")
+        _discord_auto.pop(name, None)
+        return
+    ordered = picked[::-1] if "rev" in st["flags"] else picked
+    messages, redacted = _discord_build(exs, ordered, st["flags"], datetime.datetime.now(),
+                                        _known_secrets())
+    if len(messages) > DISCORD_AUTO_MAX_MESSAGES:
+        st["sent_upto"] = n
+        print(f"{Fore.YELLOW}[~] discord: exchanges #{first}-#{n - 1} need {len(messages)} messages "
+              f"(auto mode sends at most {DISCORD_AUTO_MAX_MESSAGES}) and were NOT sent. "
+              f"Send them by hand with {_manual_cmd(first, n)} (it asks first).{Style.RESET_ALL}")
+        return
+    if redacted:
+        print(f"{Fore.YELLOW}[~] discord: hid {redacted} known secret value(s) before sending.{Style.RESET_ALL}")
+    result = _discord_deliver(active, messages, progress=False)
+    st["sent_upto"] = n
+    failed = {label: s["failed"] for label, s in result["status"].items() if s["failed"]}
+    if result["interrupted"]:
+        print(f"{Fore.YELLOW}[~] discord: interrupted; auto mode is off. Not everything was sent; "
+              f"resend by hand with {_manual_cmd(first, n, 'LABEL')}.{Style.RESET_ALL}")
+        _discord_auto.pop(name, None)
+        return
+    ok_labels = [h["label"] for h in active if h["label"] not in failed]
+    if ok_labels:
+        print(f"{Fore.GREEN}[discord] {len(picked)} exchange(s), {len(messages)} message(s) -> "
+              f"{', '.join(ok_labels)}{Style.RESET_ALL}")
+    for label, f in failed.items():
+        st["paused"].add(label)
+        print(f"{Fore.RED}[!] discord: {label} stopped at exchange #{f['exchange']}: {f['reason']}. "
+              f"Paused for this session; resend with {_manual_cmd(f['exchange'], n, label)}.{Style.RESET_ALL}")
+    if failed and all(h["label"] in st["paused"] for h in active):
+        print(f"{Fore.YELLOW}[~] discord: every destination is paused; auto mode is off "
+              f"([discord auto on] starts it again).{Style.RESET_ALL}")
+        _discord_auto.pop(name, None)
+
+
+def _discord_auto_after_reply() -> None:
+    """Called after every completed exchange."""
+    name = _current_session
+    st = _discord_auto.get(name)
+    if not st:
+        return
+    pending = len(_auto_pending(name))
+    if pending < st["every"]:
+        if pending:
+            print(f"{Fore.MAGENTA}[discord] waiting {pending}/{st['every']}{Style.RESET_ALL}")
+        return
+    _discord_auto_send(name)
+
+
+def _discord_auto_leave(name: str) -> None:
+    """Switch the mode off for a session that is being left or closed."""
+    st = _discord_auto.get(name)
+    if not st:
+        return
+    pending = _auto_pending(name)
+    if pending:
+        try:
+            ans = _ask(f"{Fore.CYAN}[+] Send {len(pending)} pending exchange(s) now? (Y/n): {Style.RESET_ALL}")
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+        if ans.lower() in ("", "y", "yes"):
+            if name in _discord_auto:
+                _discord_auto_send(name)
+        else:
+            print(f"{Fore.YELLOW}[~] discord: not sent: #{pending[0]}-#{pending[-1]}. "
+                  f"Send them later with [discord {pending[0]}:{pending[-1] + 1}].{Style.RESET_ALL}")
+    _discord_auto.pop(name, None)
+
+
+def _discord_auto_exit() -> None:
+    for name in list(_discord_auto):
+        _discord_auto_leave(name)
+
+
+def discord_auto_status() -> None:
+    name = _current_session
+    st = _discord_auto.get(name)
+    if not st:
+        print(f"{Fore.YELLOW}[~] Auto mode is off for session '{name}'. "
+              f"Start it with [discord auto on -3:] (see [discord]).{Style.RESET_ALL}")
+        return
+    pend = _auto_pending(name)
+    print(f"\n{Fore.YELLOW}Auto mode for session '{name}': ON{Style.RESET_ALL}")
+    print(f"  Window   : -{st['every']}:  (sends when {st['every']} new exchange(s) are pending)")
+    print(f"  Pending  : {len(pend)}" + (f"  (#{pend[0]}-#{pend[-1]})" if pend else ""))
+    print(f"  Flags    : {', '.join(sorted(st['flags'])) or '(none)'}")
+    print(f"  To       : {', '.join(st['targets']) or 'every registered webhook'}")
+    if st["paused"]:
+        print(f"  Paused   : {', '.join(sorted(st['paused']))}")
+    print()
+
+
+def discord_auto_on(args: list[str]) -> None:
+    left, right = args, []
+    if "to" in args:
+        i = args.index("to")
+        left, right = args[:i], args[i + 1:]
+        if not right or "to" in right:
+            print(f"{Fore.RED}[!] Give destinations after a single 'to'.{Style.RESET_ALL}\n{DISCORD_USAGE}")
+            return
+    flags: set[str] = set()
+    every: Optional[int] = None
+    for t in left:
+        m = _AUTO_WINDOW_RE.fullmatch(t)
+        if t in ("rev", "bare", "full"):
+            flags.add(t)
+        elif m:
+            if every is not None:
+                print(f"{Fore.RED}[!] Give the window only once (e.g. -3:).{Style.RESET_ALL}")
+                return
+            every = int(m.group(1))
+        elif t.isdigit() or _EXPORT_INDEX_RE.match(t) or _EXPORT_SLICE_RE.match(t):
+            print(f"{Fore.RED}[!] Auto mode counts from the newest exchange: use -N: "
+                  f"(e.g. -3: sends every 3 new exchanges, -1: after every reply).{Style.RESET_ALL}")
+            return
+        else:
+            print(f"{Fore.RED}[!] Unknown argument '{t}'.{Style.RESET_ALL}\n{DISCORD_USAGE}")
+            return
+    every = 1 if every is None else every
+    if not (1 <= every <= DISCORD_AUTO_MAX_EVERY):
+        print(f"{Fore.RED}[!] The window must be between -1: and -{DISCORD_AUTO_MAX_EVERY}:.{Style.RESET_ALL}")
+        return
+    hooks, warns, _ = load_discord_hooks()
+    for w in warns:
+        print(f"{Fore.YELLOW}[~] {w}{Style.RESET_ALL}")
+    if not hooks:
+        print(f"{Fore.YELLOW}[~] No webhook registered. Add one with [discord add webhook].{Style.RESET_ALL}")
+        return
+    targets, terr = _discord_targets(right, hooks)
+    if terr:
+        print(f"{Fore.RED}[!] {terr}{Style.RESET_ALL}")
+        return
+    name = _current_session
+    what = ("answers only" if "bare" in flags
+            else "question (full) + answer" if "full" in flags else "question (shortened) + answer")
+    print(f"\n{Fore.YELLOW}Auto mode (session '{name}'): -{every}: -> "
+          f"{', '.join(h['label'] for h in targets)}{Style.RESET_ALL}")
+    print(f"  Sends   : {what}, {'after every reply' if every == 1 else f'every {every} new exchanges, together'}")
+    print("  Not sent: system prompts and plugin texts. Imported files appear in questions "
+          "('bare' = answers only)!")
+    print(f"  Posts to the same webhook are {DISCORD_MESSAGE_INTERVAL:g} s apart; a batch over "
+          f"{DISCORD_AUTO_MAX_MESSAGES} messages is held back. Known API keys and webhook URLs are hidden.")
+    print("  Off again when you quit or leave this session. [undo] cannot unsend what was posted.")
+    if _ask(f"{Fore.CYAN}[+] Turn on? (Y/n): {Style.RESET_ALL}").lower() not in ("", "y", "yes"):
+        print(f"{Fore.YELLOW}[~] Cancelled; auto mode stays as it was.{Style.RESET_ALL}")
+        return
+    old = _discord_auto.get(name)
+    sent_upto = old["sent_upto"] if old else len(_exchanges(name))
+    _discord_auto[name] = {
+        "every": every, "flags": flags, "targets": [h["label"] for h in targets] if right else [],
+        "sent_upto": sent_upto, "paused": set(),
+    }
+    _discord_auto_clamp(name)
+    print(f"{Fore.GREEN}[OK] Auto mode is on for '{name}'. Stop it with [discord auto off].{Style.RESET_ALL}")
+
+
+def discord_auto_off() -> None:
+    name = _current_session
+    if name not in _discord_auto:
+        print(f"{Fore.YELLOW}[~] Auto mode is not on for session '{name}'.{Style.RESET_ALL}")
+        return
+    _discord_auto_leave(name)
+    print(f"{Fore.GREEN}[OK] Auto mode is off for '{name}'.{Style.RESET_ALL}")
+
+
+def discord_auto_flush() -> None:
+    name = _current_session
+    if name not in _discord_auto:
+        print(f"{Fore.YELLOW}[~] Auto mode is not on for session '{name}'.{Style.RESET_ALL}")
+        return
+    if not _auto_pending(name):
+        print(f"{Fore.YELLOW}[~] Nothing is pending.{Style.RESET_ALL}")
+        return
+    _discord_auto_send(name)
+
+
+def discord_auto_command(args: list[str]) -> None:
+    if not args:
+        discord_auto_status()
+    elif args[0] == "on":
+        discord_auto_on(args[1:])
+    elif args == ["off"]:
+        discord_auto_off()
+    elif args == ["flush"]:
+        discord_auto_flush()
+    else:
+        print(f"{Fore.YELLOW}[~] Usage: [discord auto on [-N:] [bare] [full] [to LABEL...]] | "
+              f"[discord auto off] | [discord auto flush] | [discord auto]{Style.RESET_ALL}")
+
+
 def discord_command(norm: str) -> None:
     """Dispatch '[discord ...]' (norm is the lower-cased, whitespace-normalised command)."""
     if not norm.endswith("]"):
@@ -3292,6 +3638,8 @@ def discord_command(norm: str) -> None:
             _print_exchange_list(exs)
         else:
             print(f"{Fore.YELLOW}[~] No conversation yet.{Style.RESET_ALL}")
+    elif args[0] == "auto":
+        discord_auto_command(args[1:])
     elif args[0] == "add":
         if args[1:2] == ["webhook"] and len(args) <= 3:
             discord_add_webhook(args[2] if len(args) == 3 else None)
@@ -3367,6 +3715,7 @@ def undo_last() -> None:
     _last_assistant_text = ""
     _session_last_text[_current_session] = ""
     _save_session_atomic(_current_session)  # persist immediately
+    _discord_auto_clamp()
     print(
         f"{Fore.GREEN}[OK] Undid last exchange ({len(removed)} message(s)). "
         f"History now: {len(history)} messages.{Style.RESET_ALL}"
@@ -3622,8 +3971,11 @@ def load_session() -> None:
 
     _stamp_names(history, data.get("username"))
     name = fname[:-5]
+    if name != _current_session:
+        _discord_auto_leave(_current_session)
     _sessions[name] = history
     _current_session = name
+    _discord_auto_clamp(name)
     _last_assistant_text = _session_last_text.get(name, "")
 
     model = data.get("model")
@@ -3661,6 +4013,7 @@ def clear_history() -> None:
     _last_assistant_text = ""
     _session_last_text[_current_session] = ""
     _save_session_atomic(_current_session)  # persist immediately
+    _discord_auto_clamp()
     print(f"{Fore.GREEN}[OK] Conversation history cleared.{Style.RESET_ALL}")
 
 # ============ HELP ============
@@ -3673,6 +4026,7 @@ NekoChat Commands:
   [system]      — Set the GLOBAL system prompt (shared by every session)
   [system session] — Set a prompt for the current session only (added after the global one)
   [discord]     — Post chosen exchanges to Discord webhooks: [discord -1], [discord 2:5 bare to NAME], add webhook, rm NAME
+                  [discord auto on -3:] posts by itself every 3 new exchanges (-1: = every reply); auto off / flush
   [plugin]      — Reusable prompts: [plugin] list, show NAME, on NAME [global], off NAME, new NAME
   [name]        — Change your display name (past messages keep the name they were sent with)
   [config]      — Set temperature / max_tokens
@@ -3762,7 +4116,7 @@ def main() -> None:
                 sys.stdout.flush()
                 prompt_str = (
                     f"{Fore.GREEN}{username}{Style.RESET_ALL}"
-                    f"{Fore.CYAN}[{_current_session}]{Style.RESET_ALL} : "
+                    f"{Fore.CYAN}[{_current_session}]{Style.RESET_ALL}{_discord_auto_marker()} : "
                 )
                 user_input, is_paste = _read_input(_rl_safe(prompt_str))
                 user_input = user_input.strip()
@@ -3884,6 +4238,10 @@ def main() -> None:
             except EOFError:
                 break
     finally:
+        try:
+            _discord_auto_exit()
+        except Exception as e:
+            print(f"{Fore.YELLOW}[~] discord auto mode: {type(e).__name__} while closing.{Style.RESET_ALL}")
         _auto_save_all_sessions()
         print(f"{Fore.GREEN}[OK] All sessions saved.{Style.RESET_ALL}")
 

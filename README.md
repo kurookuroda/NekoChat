@@ -1,4 +1,4 @@
-# NekoChat v2.8.16
+# NekoChat v2.8.17
 
 A clean, harmless CLI chat client for several LLM services.
 
@@ -51,7 +51,7 @@ Type `[service]` to see the services, pick one, enter its API key if it needs on
 | Service | Key | Notes |
 |---------|-----|-------|
 | `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It may be down or no longer free (HTTP 500 / 402) — switch service if so |
-| `pollinations-key` | `POLLINATIONS_API_KEY` | `gen.pollinations.ai`; get a key at enter.pollinations.ai |
+| `pollinations-key` | `POLLINATIONS_API_KEY` | `gen.pollinations.ai`; keys at https://enter.pollinations.ai/keys. The model list can be read without a key |
 | `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
 | `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
 | `cloudflare` | `CLOUDFLARE_API_TOKEN` | Also needs your account ID (`CLOUDFLARE_ACCOUNT_ID`); `[service]` asks for it and keeps it in `config.json`. No model list — type a model ID such as `@cf/...` |
@@ -112,7 +112,7 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
 | `[key]` | Set or remove API keys (hidden input; optionally saved to `keys.json`) |
 | `[system]` | Set the **global** system prompt, shared by every session (multi-line, `[end]` to finish, `[reset]` for default) |
 | `[system session]` | Set a system prompt for the **current session only**; it is added after the global one (`[reset]` removes it) |
-| `[discord]` | Post chosen exchanges to Discord webhooks: `[discord -1]`, `[discord 2:5 bare to NAME]`, `[discord add webhook [LABEL]]`, `[discord rm LABEL]` |
+| `[discord]` | Post chosen exchanges to Discord webhooks: `[discord -1]`, `[discord 2:5 bare to NAME]`, `[discord add webhook [LABEL]]`, `[discord rm LABEL]`; `[discord auto on -3:]` posts by itself |
 | `[plugin]` | Reusable prompts: `[plugin]` lists, `[plugin show NAME]`, `[plugin on NAME [global]]`, `[plugin off NAME]`, `[plugin new NAME]` |
 | `[config]` | Set `temperature` / `max_tokens` |
 | `[stream]` | Toggle streaming / batch display mode |
@@ -216,6 +216,7 @@ What is sent to the AI is the global prompt, a blank line, then the session prom
 [discord 2:5 rev bare full]        index / slice and flags as in [export] (bare = answers only)
 [discord -3: to main backup]       choose destinations by label (default: every registered webhook)
 [discord -3: to webhook]           or by kind (all webhooks)
+[discord auto on -3: bare to main] post by itself, every 3 new exchanges (see Auto mode)
 ```
 
 You must give an index or a slice (`:` means everything). Create a webhook in the Discord channel settings (Integrations > Webhooks); you can also post into an existing thread by adding `?thread_id=THREAD_ID` to the URL.
@@ -229,6 +230,25 @@ You must give an index or a slice (`:` means everything). Create a webhook in th
 - `@everyone` and role pings in the text are disabled (`allowed_mentions` is empty).
 - Two posts to the same webhook (same webhook ID) are at least **3 seconds** apart, counted from the end of the previous post; different webhooks follow each other at once. A long send therefore takes about (messages − 1) × 3 s plus the time the requests take.
 - On HTTP 429 NekoChat waits `retry_after` (at most 60 s) and tries again, up to 5 times. A webhook that fails stops receiving; the others carry on. The result is reported per webhook (`main: 8/8 sent`, or where it stopped and why). Ctrl+C stops cleanly and reports how far it got. Nothing is re-sent automatically.
+
+### Auto mode
+
+`[discord auto on -3:]` makes NekoChat post by itself: each time 3 new exchanges are pending, the newest 3 are sent together; `-1:` (the default) posts after every reply. The window is written like a Python slice counted from the end (`-3:` = the last three), and only `-N:` (N from 1 to 20) is accepted. Flags and destinations work as in a manual send.
+
+```
+[discord auto on [-N:] [bare] [full] [to LABEL...]]   switch it on (asks once)
+[discord auto off]                                    switch it off
+[discord auto flush]                                  send what is pending right now
+[discord auto]                                        show the state
+```
+
+- It is **per session and in memory only**: it is off when NekoChat starts, is never saved, and counts only exchanges made after you switched it on. While it is on, the prompt shows `(discord 2/3)` (pending / window).
+- Leaving the session (`[switch]`, `[new]`, `[load]`) or quitting switches it off after asking `Send N pending exchange(s) now? (Y/n)`; Enter sends them.
+- Auto mode posts **without asking each time**, so the screen shown when you switch it on spells out what goes out. System prompts and plugin texts are never sent, but an imported file shows up in the quoted question: use `bare` (answers only) when you work with files.
+- Known secrets (your API keys and the webhook URLs/tokens) found in the text are replaced by `[redacted]` — in automatic and manual sends alike.
+- `[undo]`, `[clear]` and `[load]` keep the count honest: an exchange you undo before it was sent is simply dropped; one that was already posted stays on Discord.
+- A batch needing more than 30 messages is held back (not sent) and the command to send it by hand is shown. A webhook that fails is paused for the rest of the session, with the command to resend. If every destination is paused, or you press Ctrl+C during a send, the mode switches itself off.
+- The 3-second spacing per webhook is kept across sends, including a manual send right after an automatic one.
 
 Only webhooks are supported so far; a bot-token mode (creating threads) is planned as `[discord add bot]`.
 
