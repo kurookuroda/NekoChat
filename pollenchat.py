@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NekoChat v2.8.17 — Clean CLI chat client for several LLM services
+NekoChat v2.8.18 — Clean CLI chat client for several LLM services
 (the file is still named pollenchat.py)
+
+Changes in v2.8.18:
+  - OpenRouter is a built-in service ("openrouter", key in OPENROUTER_API_KEY,
+    keys at https://openrouter.ai/keys). Models are written as
+    openrouter/<OpenRouter model ID>, e.g. openrouter/openai/gpt-4o-mini:floor
+    (the :nitro / :floor / :free suffixes and ~aliases go through unchanged).
+    The model list is tried without a key as well. A 429 explains the limits of
+    :free models.
+  - Fix: a model list entry that has both "id" and "name" (OpenRouter: the name
+    is a display name such as "OpenAI: GPT-4o-mini") now yields the id, which
+    is what the API wants. Entries that only have a name work as before.
+  - Fix: an error reported INSIDE a stream ("error" object or
+    finish_reason "error") used to be swallowed - the partial text was kept as a
+    finished reply. It is now shown in red, the reply counts as incomplete and
+    is not saved. A normal (200) response whose body is an error is shown too.
+    Error objects print their message instead of a dict.
 
 Changes in v2.8.17:
   - Discord auto mode: [discord auto on -3:] posts the newest exchanges by itself
@@ -332,6 +348,18 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "key_env": "CLOUDFLARE_API_TOKEN",
         "rate_hint": "Cloudflare daily free allocation may be used up (resets 00:00 UTC). Retry later.",
     },
+    "openrouter": {
+        "label": "OpenRouter",
+        "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+        "models_url": "https://openrouter.ai/api/v1/models",
+        "models_public": True,   # the list is tried without a key too
+        "key_env": "OPENROUTER_API_KEY",
+        "key_url": "https://openrouter.ai/keys",
+        "rate_hint": (
+            "OpenRouter rate limit reached. Free (:free) models allow about 20 requests/minute and "
+            "50/day (1000/day once 10+ credits were bought). Wait a moment and retry."
+        ),
+    },
 }
 DEFAULT_PROVIDER = "pollinations"
 _BUILTIN_PROVIDERS = copy.deepcopy(PROVIDERS)
@@ -561,7 +589,7 @@ BANNER = r"""
   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
 /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
-                                          v2.8.17
+                                          v2.8.18
         Clean & Harmless — Multi-service LLM chat
 """
 
@@ -1002,7 +1030,7 @@ def _extract_model_name(item: str | dict) -> Optional[str]:
     if isinstance(item, str):
         return item
     if isinstance(item, dict):
-        for key in ("name", "id", "model"):
+        for key in ("id", "name", "model"):   # "id" first: OpenRouter's "name" is a display name
             val = item.get(key)
             if isinstance(val, str):
                 return val
@@ -1041,7 +1069,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "NekoChat/2.8.17"}
+    headers = {"User-Agent": "NekoChat/2.8.18"}
     if spec.get("key_env"):
         key = get_api_key(provider)
         if key:
@@ -1055,7 +1083,8 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
         r.raise_for_status()
         ids = _parse_model_list(r.json())
     except Exception as e:
-        print(f"{Fore.YELLOW}[!] Could not fetch models from {spec['label']} ({e}){Style.RESET_ALL}")
+        hint = " - a key set with [key] may help" if spec.get("models_public") and "Authorization" not in headers else ""
+        print(f"{Fore.YELLOW}[!] Could not fetch models from {spec['label']} ({e}){hint}{Style.RESET_ALL}")
         return None
     if not ids:
         return None
@@ -2196,6 +2225,13 @@ def delete_session() -> None:
     print(f"{Fore.GREEN}[OK] Deleted '{name}'{Style.RESET_ALL}")
 
 # ============ CHAT ============
+def _error_message(err: Any) -> str:
+    """Readable text of an "error" value: a string, or an object like {"message": ..., "code": ...}."""
+    if isinstance(err, dict):
+        err = err.get("message") or err.get("code") or err
+    return str(err)[:200]
+
+
 def _server_error_text(resp: Optional[requests.Response]) -> str:
     """Short reason taken from an error response body (JSON "error" field if present)."""
     if resp is None:
@@ -2203,10 +2239,7 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
     try:
         data = resp.json()
         if isinstance(data, dict) and data.get("error"):
-            err = data["error"]
-            if isinstance(err, dict):  # e.g. {"error": {"message": "...", "code": "UNAUTHORIZED"}}
-                err = err.get("message") or err.get("code") or err
-            return str(err)[:200]
+            return _error_message(data["error"])
     except ValueError:
         pass
     text = (resp.text or "").strip()
@@ -2240,7 +2273,7 @@ def send_chat(
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "NekoChat/2.8.17",
+        "User-Agent": "NekoChat/2.8.18",
         **auth_headers,
     }
 
@@ -2286,6 +2319,7 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
     completed = False
     stopped = False
     finished = False  # saw [DONE] or a finish_reason
+    stream_error: Optional[str] = None  # a failure the service reported inside the stream
 
     def _emit(s: str) -> None:
         if s:
@@ -2309,6 +2343,9 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
                 continue
             if not isinstance(data, dict):
                 continue
+            if data.get("error"):  # e.g. OpenRouter: {"error": {...}, "choices": [{"finish_reason": "error"}]}
+                stream_error = _error_message(data["error"])
+                break
             choices = data.get("choices")
             if not isinstance(choices, list) or not choices:
                 continue
@@ -2317,6 +2354,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
                 continue
             if first.get("finish_reason"):
                 finished = True
+                if first.get("finish_reason") == "error" and not stream_error:
+                    stream_error = "the service ended the reply with an error (finish_reason=error)"
             delta = first.get("delta")
             if not isinstance(delta, dict):
                 continue
@@ -2355,15 +2394,18 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
 
         if not stopped:
             _emit(full_text[shown:])  # flush any held-back tail
-        completed = True
         print()
-        if stopped:
-            print(f"{Fore.YELLOW}[~] Turn guard stopped fake turn generation.{Style.RESET_ALL}")
-        elif not finished:
-            print(
-                f"{Fore.YELLOW}[~] Stream ended without [DONE]; "
-                f"the response may be cut off.{Style.RESET_ALL}"
-            )
+        if stream_error:  # never pass a broken reply off as a finished one
+            print(f"{Fore.RED}[!] Stream error: {stream_error}. The reply is incomplete.{Style.RESET_ALL}")
+        else:
+            completed = True
+            if stopped:
+                print(f"{Fore.YELLOW}[~] Turn guard stopped fake turn generation.{Style.RESET_ALL}")
+            elif not finished:
+                print(
+                    f"{Fore.YELLOW}[~] Stream ended without [DONE]; "
+                    f"the response may be cut off.{Style.RESET_ALL}"
+                )
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}[!] Interrupted by user.{Style.RESET_ALL}")
     except requests.exceptions.RequestException as e:
@@ -2391,6 +2433,10 @@ def batch_response(response: requests.Response) -> tuple[str, bool]:
                         )
                     print(Fore.MAGENTA + truncated + Style.RESET_ALL)
                     return truncated, True
+        err = data.get("error")
+        if err:  # a failure reported inside a normal (200) response body
+            print(f"{Fore.RED}[!] Service error: {_error_message(err)}{Style.RESET_ALL}")
+            return "", False
         return "", True
     except (json.JSONDecodeError, KeyError, AttributeError, requests.exceptions.RequestException) as e:
         print(f"{Fore.RED}[!] Batch response error: {e}{Style.RESET_ALL}")

@@ -1,8 +1,8 @@
-# NekoChat v2.8.17
+# NekoChat v2.8.18
 
 A clean, harmless CLI chat client for several LLM services.
 
-NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat application. It talks to OpenAI-compatible services — [PollinationsAI](https://pollinations.ai/), NVIDIA, Mistral and Cloudflare Workers AI are built in, and you can add your own in `config.json`. It also supports image generation (PollinationsAI), multi-session management, code extraction, and more. It runs on plain CPython, including Termux.
+NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat application. It talks to OpenAI-compatible services — [PollinationsAI](https://pollinations.ai/), NVIDIA, Mistral, Cloudflare Workers AI and OpenRouter are built in, and you can add your own in `config.json`. It also supports image generation (PollinationsAI), multi-session management, code extraction, and more. It runs on plain CPython, including Termux.
 
 ## Features
 
@@ -55,8 +55,13 @@ Type `[service]` to see the services, pick one, enter its API key if it needs on
 | `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
 | `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
 | `cloudflare` | `CLOUDFLARE_API_TOKEN` | Also needs your account ID (`CLOUDFLARE_ACCOUNT_ID`); `[service]` asks for it and keeps it in `config.json`. No model list — type a model ID such as `@cf/...` |
+| `openrouter` | `OPENROUTER_API_KEY` | Keys at https://openrouter.ai/keys. One key for many models; the model list is also tried without a key. See below |
 
 Free-tier limits differ per service and change over time; check each service's own documentation.
+
+### OpenRouter
+
+OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. Routing options such as a list of fallback models are not configurable from NekoChat yet.
 
 ### Where the key comes from
 

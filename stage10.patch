@@ -1,0 +1,361 @@
+diff --git a/README.md b/README.md
+index afb50bb..5938668 100644
+--- a/README.md
++++ b/README.md
+@@ -1,8 +1,8 @@
+-# NekoChat v2.8.17
++# NekoChat v2.8.18
+ 
+ A clean, harmless CLI chat client for several LLM services.
+ 
+-NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat application. It talks to OpenAI-compatible services — [PollinationsAI](https://pollinations.ai/), NVIDIA, Mistral and Cloudflare Workers AI are built in, and you can add your own in `config.json`. It also supports image generation (PollinationsAI), multi-session management, code extraction, and more. It runs on plain CPython, including Termux.
++NekoChat (the script is still `pollenchat.py`) is a lightweight terminal chat application. It talks to OpenAI-compatible services — [PollinationsAI](https://pollinations.ai/), NVIDIA, Mistral, Cloudflare Workers AI and OpenRouter are built in, and you can add your own in `config.json`. It also supports image generation (PollinationsAI), multi-session management, code extraction, and more. It runs on plain CPython, including Termux.
+ 
+ ## Features
+ 
+@@ -55,9 +55,14 @@ Type `[service]` to see the services, pick one, enter its API key if it needs on
+ | `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
+ | `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
+ | `cloudflare` | `CLOUDFLARE_API_TOKEN` | Also needs your account ID (`CLOUDFLARE_ACCOUNT_ID`); `[service]` asks for it and keeps it in `config.json`. No model list — type a model ID such as `@cf/...` |
++| `openrouter` | `OPENROUTER_API_KEY` | Keys at https://openrouter.ai/keys. One key for many models; the model list is also tried without a key. See below |
+ 
+ Free-tier limits differ per service and change over time; check each service's own documentation.
+ 
++### OpenRouter
++
++OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. Routing options such as a list of fallback models are not configurable from NekoChat yet.
++
+ ### Where the key comes from
+ 
+ NekoChat looks for a service's key in this order:
+diff --git a/pollenchat.py b/pollenchat.py
+index baecac4..e7bb3a8 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -1,9 +1,25 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+ """
+-NekoChat v2.8.17 — Clean CLI chat client for several LLM services
++NekoChat v2.8.18 — Clean CLI chat client for several LLM services
+ (the file is still named pollenchat.py)
+ 
++Changes in v2.8.18:
++  - OpenRouter is a built-in service ("openrouter", key in OPENROUTER_API_KEY,
++    keys at https://openrouter.ai/keys). Models are written as
++    openrouter/<OpenRouter model ID>, e.g. openrouter/openai/gpt-4o-mini:floor
++    (the :nitro / :floor / :free suffixes and ~aliases go through unchanged).
++    The model list is tried without a key as well. A 429 explains the limits of
++    :free models.
++  - Fix: a model list entry that has both "id" and "name" (OpenRouter: the name
++    is a display name such as "OpenAI: GPT-4o-mini") now yields the id, which
++    is what the API wants. Entries that only have a name work as before.
++  - Fix: an error reported INSIDE a stream ("error" object or
++    finish_reason "error") used to be swallowed - the partial text was kept as a
++    finished reply. It is now shown in red, the reply counts as incomplete and
++    is not saved. A normal (200) response whose body is an error is shown too.
++    Error objects print their message instead of a dict.
++
+ Changes in v2.8.17:
+   - Discord auto mode: [discord auto on -3:] posts the newest exchanges by itself
+     each time 3 new ones are pending; -1: (the default) after every reply. The
+@@ -332,6 +348,18 @@ PROVIDERS: dict[str, dict[str, Any]] = {
+         "key_env": "CLOUDFLARE_API_TOKEN",
+         "rate_hint": "Cloudflare daily free allocation may be used up (resets 00:00 UTC). Retry later.",
+     },
++    "openrouter": {
++        "label": "OpenRouter",
++        "chat_url": "https://openrouter.ai/api/v1/chat/completions",
++        "models_url": "https://openrouter.ai/api/v1/models",
++        "models_public": True,   # the list is tried without a key too
++        "key_env": "OPENROUTER_API_KEY",
++        "key_url": "https://openrouter.ai/keys",
++        "rate_hint": (
++            "OpenRouter rate limit reached. Free (:free) models allow about 20 requests/minute and "
++            "50/day (1000/day once 10+ credits were bought). Wait a moment and retry."
++        ),
++    },
+ }
+ DEFAULT_PROVIDER = "pollinations"
+ _BUILTIN_PROVIDERS = copy.deepcopy(PROVIDERS)
+@@ -561,7 +589,7 @@ BANNER = r"""
+   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
+  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
+ /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
+-                                          v2.8.17
++                                          v2.8.18
+         Clean & Harmless — Multi-service LLM chat
+ """
+ 
+@@ -1002,7 +1030,7 @@ def _extract_model_name(item: str | dict) -> Optional[str]:
+     if isinstance(item, str):
+         return item
+     if isinstance(item, dict):
+-        for key in ("name", "id", "model"):
++        for key in ("id", "name", "model"):   # "id" first: OpenRouter's "name" is a display name
+             val = item.get(key)
+             if isinstance(val, str):
+                 return val
+@@ -1041,7 +1069,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+     cached = _models_cache.get(provider)
+     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+         return cached[1]
+-    headers = {"User-Agent": "NekoChat/2.8.17"}
++    headers = {"User-Agent": "NekoChat/2.8.18"}
+     if spec.get("key_env"):
+         key = get_api_key(provider)
+         if key:
+@@ -1055,7 +1083,8 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+         r.raise_for_status()
+         ids = _parse_model_list(r.json())
+     except Exception as e:
+-        print(f"{Fore.YELLOW}[!] Could not fetch models from {spec['label']} ({e}){Style.RESET_ALL}")
++        hint = " - a key set with [key] may help" if spec.get("models_public") and "Authorization" not in headers else ""
++        print(f"{Fore.YELLOW}[!] Could not fetch models from {spec['label']} ({e}){hint}{Style.RESET_ALL}")
+         return None
+     if not ids:
+         return None
+@@ -2196,6 +2225,13 @@ def delete_session() -> None:
+     print(f"{Fore.GREEN}[OK] Deleted '{name}'{Style.RESET_ALL}")
+ 
+ # ============ CHAT ============
++def _error_message(err: Any) -> str:
++    """Readable text of an "error" value: a string, or an object like {"message": ..., "code": ...}."""
++    if isinstance(err, dict):
++        err = err.get("message") or err.get("code") or err
++    return str(err)[:200]
++
++
+ def _server_error_text(resp: Optional[requests.Response]) -> str:
+     """Short reason taken from an error response body (JSON "error" field if present)."""
+     if resp is None:
+@@ -2203,10 +2239,7 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
+     try:
+         data = resp.json()
+         if isinstance(data, dict) and data.get("error"):
+-            err = data["error"]
+-            if isinstance(err, dict):  # e.g. {"error": {"message": "...", "code": "UNAUTHORIZED"}}
+-                err = err.get("message") or err.get("code") or err
+-            return str(err)[:200]
++            return _error_message(data["error"])
+     except ValueError:
+         pass
+     text = (resp.text or "").strip()
+@@ -2240,7 +2273,7 @@ def send_chat(
+ 
+     headers = {
+         "Content-Type": "application/json",
+-        "User-Agent": "NekoChat/2.8.17",
++        "User-Agent": "NekoChat/2.8.18",
+         **auth_headers,
+     }
+ 
+@@ -2286,6 +2319,7 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+     completed = False
+     stopped = False
+     finished = False  # saw [DONE] or a finish_reason
++    stream_error: Optional[str] = None  # a failure the service reported inside the stream
+ 
+     def _emit(s: str) -> None:
+         if s:
+@@ -2309,6 +2343,9 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+                 continue
+             if not isinstance(data, dict):
+                 continue
++            if data.get("error"):  # e.g. OpenRouter: {"error": {...}, "choices": [{"finish_reason": "error"}]}
++                stream_error = _error_message(data["error"])
++                break
+             choices = data.get("choices")
+             if not isinstance(choices, list) or not choices:
+                 continue
+@@ -2317,6 +2354,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+                 continue
+             if first.get("finish_reason"):
+                 finished = True
++                if first.get("finish_reason") == "error" and not stream_error:
++                    stream_error = "the service ended the reply with an error (finish_reason=error)"
+             delta = first.get("delta")
+             if not isinstance(delta, dict):
+                 continue
+@@ -2355,15 +2394,18 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+ 
+         if not stopped:
+             _emit(full_text[shown:])  # flush any held-back tail
+-        completed = True
+         print()
+-        if stopped:
+-            print(f"{Fore.YELLOW}[~] Turn guard stopped fake turn generation.{Style.RESET_ALL}")
+-        elif not finished:
+-            print(
+-                f"{Fore.YELLOW}[~] Stream ended without [DONE]; "
+-                f"the response may be cut off.{Style.RESET_ALL}"
+-            )
++        if stream_error:  # never pass a broken reply off as a finished one
++            print(f"{Fore.RED}[!] Stream error: {stream_error}. The reply is incomplete.{Style.RESET_ALL}")
++        else:
++            completed = True
++            if stopped:
++                print(f"{Fore.YELLOW}[~] Turn guard stopped fake turn generation.{Style.RESET_ALL}")
++            elif not finished:
++                print(
++                    f"{Fore.YELLOW}[~] Stream ended without [DONE]; "
++                    f"the response may be cut off.{Style.RESET_ALL}"
++                )
+     except KeyboardInterrupt:
+         print(f"\n{Fore.YELLOW}[!] Interrupted by user.{Style.RESET_ALL}")
+     except requests.exceptions.RequestException as e:
+@@ -2391,6 +2433,10 @@ def batch_response(response: requests.Response) -> tuple[str, bool]:
+                         )
+                     print(Fore.MAGENTA + truncated + Style.RESET_ALL)
+                     return truncated, True
++        err = data.get("error")
++        if err:  # a failure reported inside a normal (200) response body
++            print(f"{Fore.RED}[!] Service error: {_error_message(err)}{Style.RESET_ALL}")
++            return "", False
+         return "", True
+     except (json.JSONDecodeError, KeyError, AttributeError, requests.exceptions.RequestException) as e:
+         print(f"{Fore.RED}[!] Batch response error: {e}{Style.RESET_ALL}")
+diff --git a/pollenchat_guide.html b/pollenchat_guide.html
+index 7a32985..b1e54b5 100644
+--- a/pollenchat_guide.html
++++ b/pollenchat_guide.html
+@@ -3,7 +3,7 @@
+ <head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-<title>NekoChat v2.8.17 詳細な使い方ガイド</title>
++<title>NekoChat v2.8.18 詳細な使い方ガイド</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+ <style>
+@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
+ <body>
+ 
+ <header>
+-  <h1>NekoChat v2.8.17</h1>
++  <h1>NekoChat v2.8.18</h1>
+   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
+ </header>
+ 
+@@ -261,6 +261,7 @@ a:hover { text-decoration: underline; }
+ <span class="out">  [ ] 3. nvidia            key not set</span>
+ <span class="out">  [ ] 4. mistral           key not set</span>
+ <span class="out">  [ ] 5. cloudflare        key not set</span>
++<span class="out">  [ ] 6. openrouter        key not set</span>
+ 
+ <span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
+ <span class="info">[~] Mistral needs an API key.</span>
+@@ -304,6 +305,7 @@ a:hover { text-decoration: underline; }
+ <span class="out">  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]</span>
+ <span class="out">  3. mistral           MISTRAL_API_KEY          [not set]</span>
+ <span class="out">  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]</span>
++<span class="out">  5. openrouter        OPENROUTER_API_KEY       [not set]</span>
+   </div>
+   <p>キーは次の順で探されます。</p>
+   <ol>
+@@ -321,9 +323,19 @@ a:hover { text-decoration: underline; }
+     <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
+     <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
+     <tr><td>cloudflare</td><td><code>CLOUDFLARE_API_TOKEN</code></td><td>アカウントID（<code>CLOUDFLARE_ACCOUNT_ID</code>）も必要。<code>[service]</code> が聞いて <code>config.json</code> に保存します</td></tr>
++    <tr><td>openrouter</td><td><code>OPENROUTER_API_KEY</code></td><td><code>https://openrouter.ai/keys</code> でキーを取得。1つのキーで、たくさんのモデルを使えます。下の説明を参照</td></tr>
+   </table>
+   <p>無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。</p>
+ 
++  <h3>OpenRouter</h3>
++  <p>OpenRouter は、1つのキーで、たくさんのモデルを使えるサービスです。モデルは、<code>openrouter/</code> のあとに、OpenRouter 自身のモデル ID を続けて書きます（例: <code>openrouter/openai/gpt-4o-mini</code>）。ふつうは、<code>[service]</code> や <code>[model]</code> の一覧から選びます（一覧には、表示名ではなく、本当のモデル ID が並びます）。</p>
++  <ul>
++    <li>OpenRouter の接尾辞は、ID の一部として、そのまま使えます。<code>:nitro</code>（いちばん速いプロバイダ）、<code>:floor</code>（いちばん安いプロバイダ）、<code>:free</code>（無料モデル）と、<code>~openai/gpt-latest</code> のような <code>~</code> 付きの別名です。</li>
++    <li>ID が <code>:free</code> で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。</li>
++    <li>キーは、<code>https://openrouter.ai/keys</code> で作ります。モデルの一覧は、キーなしでも、まず取得を試します。</li>
++    <li>フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。</li>
++  </ul>
++
+   <h3>自分のサービスを追加する</h3>
+   <p><code>config.json</code> の <code>providers</code> に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。</p>
+   <div class="terminal">
+@@ -775,6 +787,9 @@ a:hover { text-decoration: underline; }
+   <h3>HTTP 429 (Rate Limited)</h3>
+   <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
+ 
++  <h3>返信の途中でエラーが出る（Stream error）</h3>
++  <p>返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で <code>Stream error: …</code> と原因が表示され、途中までの返信は、<strong>履歴に保存されません</strong>（<code>この応答は履歴に追加しませんでした</code> と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。</p>
++
+   <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
+   <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
+ 
+diff --git a/pollenchat_guide.md b/pollenchat_guide.md
+index 4938682..a7a1a2f 100644
+--- a/pollenchat_guide.md
++++ b/pollenchat_guide.md
+@@ -1,6 +1,6 @@
+-# NekoChat 使い方ガイド（v2.8.17）
++# NekoChat 使い方ガイド（v2.8.18）
+ 
+-NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
++NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI・OpenRouter を内蔵し、`config.json` で自分のサービスも追加できます。
+ 
+ ## 起動
+ 
+@@ -54,6 +54,7 @@ Services:
+   [ ] 3. nvidia            key not set
+   [ ] 4. mistral           key not set
+   [ ] 5. cloudflare        key not set
++  [ ] 6. openrouter        key not set
+ 
+ [+] Select service (number or name, Enter=cancel): 4
+ [~] Mistral needs an API key.
+@@ -100,6 +101,7 @@ Services that need an API key:
+   2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]
+   3. mistral           MISTRAL_API_KEY          [not set]
+   4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]
++  5. openrouter        OPENROUTER_API_KEY       [not set]
+ ```
+ 
+ キーは次の順で探されます。
+@@ -117,9 +119,19 @@ Services that need an API key:
+ | nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
+ | mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
+ | cloudflare | `CLOUDFLARE_API_TOKEN` | アカウントID（`CLOUDFLARE_ACCOUNT_ID`）も必要。`[service]` が聞いて `config.json` に保存します |
++| openrouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/keys` でキーを取得。1つのキーで、たくさんのモデルを使えます。下の説明を参照 |
+ 
+ 無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。
+ 
++### OpenRouter
++
++OpenRouter は、1つのキーで、たくさんのモデルを使えるサービスです。モデルは、`openrouter/` のあとに、OpenRouter 自身のモデル ID を続けて書きます（例: `openrouter/openai/gpt-4o-mini`）。ふつうは、`[service]` や `[model]` の一覧から選びます（一覧には、表示名ではなく、本当のモデル ID が並びます）。
++
++- OpenRouter の接尾辞は、ID の一部として、そのまま使えます。`:nitro`（いちばん速いプロバイダ）、`:floor`（いちばん安いプロバイダ）、`:free`（無料モデル）と、`~openai/gpt-latest` のような `~` 付きの別名です。
++- ID が `:free` で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。
++- キーは、`https://openrouter.ai/keys` で作ります。モデルの一覧は、キーなしでも、まず取得を試します。
++- フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。
++
+ ### 自分のサービスを追加する
+ 
+ `config.json` の `providers` に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。
+@@ -579,6 +591,10 @@ Bye bye, Taro!
+ 
+ どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。
+ 
++### 返信の途中でエラーが出る（Stream error）
++
++返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で `Stream error: …` と原因が表示され、途中までの返信は、**履歴に保存されません**（`この応答は履歴に追加しませんでした` と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。
++
+ ### HTTP 500 / 402（PollinationsAI の匿名端点）
+ 
+ 旧端点が停止している、または無料でなくなっている可能性があります。`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
+diff --git a/usage.txt b/usage.txt
+index ddaba01..25b3ee4 100644
+--- a/usage.txt
++++ b/usage.txt
+@@ -1,4 +1,4 @@
+-[service]    — サービス切り替え（PollinationsAI / NVIDIA / Mistral / Cloudflare / 自作）。キー入力→モデル選択まで一続き
++[service]    — サービス切り替え（PollinationsAI / NVIDIA / Mistral / Cloudflare / OpenRouter / 自作）。キー入力→モデル選択まで一続き
+ [model]      — 現在のサービスのモデル選択
+ [key]        — APIキーの設定・削除（入力は非表示、keys.json に保存も可）
+ [system]     — 全体のシステムプロンプト設定（全セッション共通。複数行入力可、[end]で確定 / [reset]でデフォルトに戻す）
+@@ -33,4 +33,4 @@
+ [exit]       — 終了（全セッション自動保存）
+ 
+ ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
+-※ v2.8.17〜
++※ v2.8.18〜

@@ -1,4 +1,4 @@
-[service]    — サービス切り替え（PollinationsAI / NVIDIA / Mistral / Cloudflare / 自作）。キー入力→モデル選択まで一続き
+[service]    — サービス切り替え（PollinationsAI / NVIDIA / Mistral / Cloudflare / OpenRouter / 自作）。キー入力→モデル選択まで一続き
 [model]      — 現在のサービスのモデル選択
 [key]        — APIキーの設定・削除（入力は非表示、keys.json に保存も可）
 [system]     — 全体のシステムプロンプト設定（全セッション共通。複数行入力可、[end]で確定 / [reset]でデフォルトに戻す）
@@ -33,4 +33,4 @@
 [exit]       — 終了（全セッション自動保存）
 
 ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
-※ v2.8.17〜
+※ v2.8.18〜

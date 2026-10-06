@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NekoChat v2.8.17 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.18 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>NekoChat v2.8.17</h1>
+  <h1>NekoChat v2.8.18</h1>
   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
@@ -261,6 +261,7 @@ a:hover { text-decoration: underline; }
 <span class="out">  [ ] 3. nvidia            key not set</span>
 <span class="out">  [ ] 4. mistral           key not set</span>
 <span class="out">  [ ] 5. cloudflare        key not set</span>
+<span class="out">  [ ] 6. openrouter        key not set</span>
 
 <span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
 <span class="info">[~] Mistral needs an API key.</span>
@@ -304,6 +305,7 @@ a:hover { text-decoration: underline; }
 <span class="out">  2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]</span>
 <span class="out">  3. mistral           MISTRAL_API_KEY          [not set]</span>
 <span class="out">  4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]</span>
+<span class="out">  5. openrouter        OPENROUTER_API_KEY       [not set]</span>
   </div>
   <p>キーは次の順で探されます。</p>
   <ol>
@@ -321,8 +323,18 @@ a:hover { text-decoration: underline; }
     <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
     <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
     <tr><td>cloudflare</td><td><code>CLOUDFLARE_API_TOKEN</code></td><td>アカウントID（<code>CLOUDFLARE_ACCOUNT_ID</code>）も必要。<code>[service]</code> が聞いて <code>config.json</code> に保存します</td></tr>
+    <tr><td>openrouter</td><td><code>OPENROUTER_API_KEY</code></td><td><code>https://openrouter.ai/keys</code> でキーを取得。1つのキーで、たくさんのモデルを使えます。下の説明を参照</td></tr>
   </table>
   <p>無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。</p>
+
+  <h3>OpenRouter</h3>
+  <p>OpenRouter は、1つのキーで、たくさんのモデルを使えるサービスです。モデルは、<code>openrouter/</code> のあとに、OpenRouter 自身のモデル ID を続けて書きます（例: <code>openrouter/openai/gpt-4o-mini</code>）。ふつうは、<code>[service]</code> や <code>[model]</code> の一覧から選びます（一覧には、表示名ではなく、本当のモデル ID が並びます）。</p>
+  <ul>
+    <li>OpenRouter の接尾辞は、ID の一部として、そのまま使えます。<code>:nitro</code>（いちばん速いプロバイダ）、<code>:floor</code>（いちばん安いプロバイダ）、<code>:free</code>（無料モデル）と、<code>~openai/gpt-latest</code> のような <code>~</code> 付きの別名です。</li>
+    <li>ID が <code>:free</code> で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。</li>
+    <li>キーは、<code>https://openrouter.ai/keys</code> で作ります。モデルの一覧は、キーなしでも、まず取得を試します。</li>
+    <li>フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。</li>
+  </ul>
 
   <h3>自分のサービスを追加する</h3>
   <p><code>config.json</code> の <code>providers</code> に書くと、OpenAI 互換のサービスを追加（または内蔵のものを上書き）できます。</p>
@@ -774,6 +786,9 @@ a:hover { text-decoration: underline; }
 
   <h3>HTTP 429 (Rate Limited)</h3>
   <p>どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。</p>
+
+  <h3>返信の途中でエラーが出る（Stream error）</h3>
+  <p>返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で <code>Stream error: …</code> と原因が表示され、途中までの返信は、<strong>履歴に保存されません</strong>（<code>この応答は履歴に追加しませんでした</code> と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。</p>
 
   <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
   <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>

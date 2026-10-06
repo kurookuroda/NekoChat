@@ -1,6 +1,6 @@
-# NekoChat 使い方ガイド（v2.8.17）
+# NekoChat 使い方ガイド（v2.8.18）
 
-NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI を内蔵し、`config.json` で自分のサービスも追加できます。
+NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI・OpenRouter を内蔵し、`config.json` で自分のサービスも追加できます。
 
 ## 起動
 
@@ -54,6 +54,7 @@ Services:
   [ ] 3. nvidia            key not set
   [ ] 4. mistral           key not set
   [ ] 5. cloudflare        key not set
+  [ ] 6. openrouter        key not set
 
 [+] Select service (number or name, Enter=cancel): 4
 [~] Mistral needs an API key.
@@ -100,6 +101,7 @@ Services that need an API key:
   2. nvidia            NVIDIA_API_KEY           [set: keys.json ...x9Qa]
   3. mistral           MISTRAL_API_KEY          [not set]
   4. cloudflare        CLOUDFLARE_API_TOKEN     [not set]
+  5. openrouter        OPENROUTER_API_KEY       [not set]
 ```
 
 キーは次の順で探されます。
@@ -117,8 +119,18 @@ Services that need an API key:
 | nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
 | mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
 | cloudflare | `CLOUDFLARE_API_TOKEN` | アカウントID（`CLOUDFLARE_ACCOUNT_ID`）も必要。`[service]` が聞いて `config.json` に保存します |
+| openrouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/keys` でキーを取得。1つのキーで、たくさんのモデルを使えます。下の説明を参照 |
 
 無料枠の上限はサービスごとに違い、変わることもあります。各サービスの公式情報を確認してください。
+
+### OpenRouter
+
+OpenRouter は、1つのキーで、たくさんのモデルを使えるサービスです。モデルは、`openrouter/` のあとに、OpenRouter 自身のモデル ID を続けて書きます（例: `openrouter/openai/gpt-4o-mini`）。ふつうは、`[service]` や `[model]` の一覧から選びます（一覧には、表示名ではなく、本当のモデル ID が並びます）。
+
+- OpenRouter の接尾辞は、ID の一部として、そのまま使えます。`:nitro`（いちばん速いプロバイダ）、`:floor`（いちばん安いプロバイダ）、`:free`（無料モデル）と、`~openai/gpt-latest` のような `~` 付きの別名です。
+- ID が `:free` で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。
+- キーは、`https://openrouter.ai/keys` で作ります。モデルの一覧は、キーなしでも、まず取得を試します。
+- フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。
 
 ### 自分のサービスを追加する
 
@@ -578,6 +590,10 @@ Bye bye, Taro!
 ### HTTP 429 (Rate Limited)
 
 どのサービスにもレート制限があります。数秒〜数十秒待ってから再試行してください。メッセージにサービス名が出ます。
+
+### 返信の途中でエラーが出る（Stream error）
+
+返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で `Stream error: …` と原因が表示され、途中までの返信は、**履歴に保存されません**（`この応答は履歴に追加しませんでした` と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。
 
 ### HTTP 500 / 402（PollinationsAI の匿名端点）
 
