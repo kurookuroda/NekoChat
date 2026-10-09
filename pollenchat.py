@@ -1,8 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NekoChat v2.8.18 — Clean CLI chat client for several LLM services
+NekoChat v2.8.19 — Clean CLI chat client for several LLM services
 (the file is still named pollenchat.py)
+
+Changes in v2.8.19:
+  - "providers" in config.json take two more fields: "extra_body" (fixed fields
+    added to every request of that service, e.g. OpenRouter's {"models": [...],
+    "provider": {...}} for fallback models and routing; model / messages /
+    stream / temperature / max_tokens stay under NekoChat's control) and
+    "headers" (extra HTTP headers such as HTTP-Referer; Authorization,
+    Content-Type etc. cannot be replaced, credential-like names are refused:
+    keys belong in [key]). [service] says when a service has them.
+  - [model used: X] after a reply when OpenRouter (or any service whose
+    extra_body has "models") answered with another model than the one asked
+    for (fallbacks, ~aliases, openrouter/auto); dated snapshots and :floor-type
+    suffixes do not count as different.
+  - A 401/403 names where the key came from and its last 4 characters; a 402
+    from OpenRouter explains credits.
+  - After a key is typed ([key], [service]) NekoChat offers to check it with the
+    service at once (OpenRouter /api/v1/key; NVIDIA, Mistral and custom services
+    through their model list) and drops a rejected key instead of keeping it.
+    A check that cannot be made (network, an unknown answer) is reported and
+    the key is kept.
+  - A model list over 100 entries first shows the count per vendor; Enter at
+    the filter asks before printing everything.
+  - The note for the anonymous PollinationsAI endpoint now says it is sometimes
+    unstable (before: "may be down or no longer free").
 
 Changes in v2.8.18:
   - OpenRouter is a built-in service ("openrouter", key in OPENROUTER_API_KEY,
@@ -312,8 +336,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "key_env": None,
         "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
         "fail_hint": (
-            "The anonymous legacy endpoint may be down or no longer free. Switch with [service], or set "
-            "POLLINATIONS_API_KEY and use the pollinations-key service."
+            "The anonymous endpoint is sometimes unstable (it has gone down or asked for payment before). "
+            "Retry later, switch with [service], or set POLLINATIONS_API_KEY and use the pollinations-key service."
         ),
     },
     "pollinations-key": {
@@ -355,6 +379,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "models_public": True,   # the list is tried without a key too
         "key_env": "OPENROUTER_API_KEY",
         "key_url": "https://openrouter.ai/keys",
+        "key_check_url": "https://openrouter.ai/api/v1/key",   # answers 401 for a bad key
+        "show_model_used": True,                                 # tell which model really answered
+        "payment_hint": (
+            "Out of credits, or the balance is negative (free models then answer 402 too). "
+            "Check your balance in your OpenRouter account."
+        ),
         "rate_hint": (
             "OpenRouter rate limit reached. Free (:free) models allow about 20 requests/minute and "
             "50/day (1000/day once 10+ credits were bought). Wait a moment and retry."
@@ -379,6 +409,58 @@ _LOCAL_HTTP = re.compile(r"^http://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(/|$)"
 def _url_ok(url: str) -> bool:
     """https only; plain http is accepted for a local server (e.g. Ollama)."""
     return url.startswith("https://") or bool(_LOCAL_HTTP.match(url))
+
+_RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "temperature", "max_tokens"})
+_RESERVED_HEADERS = frozenset({"authorization", "content-type", "content-length", "host", "cookie", "user-agent"})
+_HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
+_CREDENTIAL_LIKE = re.compile(r"key|token|secret|auth|password", re.I)
+
+
+def _clean_extra_body(v: Any, where: str) -> Optional[dict[str, Any]]:
+    """extra_body: fixed fields added to every request of a service (OpenRouter's "models", ...)."""
+    if not isinstance(v, dict) or not all(isinstance(k, str) for k in v):
+        _config_warnings.append(f"{where}.extra_body: must be an object; ignored.")
+        return None
+    out: dict[str, Any] = {}
+    for k, val in v.items():
+        if k in _RESERVED_BODY_KEYS:
+            _config_warnings.append(f"{where}.extra_body.{k}: NekoChat sets this itself; ignored.")
+        else:
+            out[k] = val
+    try:
+        text = json.dumps(out, ensure_ascii=False)
+    except (TypeError, ValueError):
+        _config_warnings.append(f"{where}.extra_body: must be plain JSON; ignored.")
+        return None
+    if len(text) > 8000:
+        _config_warnings.append(f"{where}.extra_body: larger than 8000 characters; ignored.")
+        return None
+    return json.loads(text) or None
+
+
+def _clean_headers(v: Any, where: str) -> Optional[dict[str, str]]:
+    """headers: extra HTTP headers (HTTP-Referer, ...). Never credentials: those belong in [key]."""
+    if not isinstance(v, dict):
+        _config_warnings.append(f"{where}.headers: must be an object of strings; ignored.")
+        return None
+    out: dict[str, str] = {}
+    for k, val in v.items():
+        if not (isinstance(k, str) and isinstance(val, str) and _HEADER_NAME_RE.fullmatch(k)
+                and "\r" not in val and "\n" not in val and len(val) <= 300):
+            _config_warnings.append(f"{where}.headers: an entry was invalid (names: letters, digits, '-'; "
+                                    f"values: one line of text); ignored.")
+        elif k.lower() in _RESERVED_HEADERS:
+            _config_warnings.append(f"{where}.headers.{k}: NekoChat sets this itself; ignored.")
+        elif _CREDENTIAL_LIKE.search(k):
+            _config_warnings.append(f"{where}.headers.{k}: looks like a credential; keys are not read from "
+                                    f"config.json, use [key]; ignored.")
+        else:
+            out[k] = val
+    if len(out) > 10:
+        _config_warnings.append(f"{where}.headers: more than 10 headers; ignored.")
+        return None
+    return out or None
+
 
 def apply_providers_config(block: object) -> None:
     """Rebuild PROVIDERS from the built-ins plus the config.json block. Bad entries are
@@ -415,6 +497,14 @@ def apply_providers_config(block: object) -> None:
                     clean["vars"] = dict(v)
                 else:
                     _config_warnings.append(f"{where}.vars: must be an object of strings; ignored.")
+            elif k == "extra_body":
+                cleaned_body = _clean_extra_body(v, where)
+                if cleaned_body:
+                    clean["extra_body"] = cleaned_body
+            elif k == "headers":
+                cleaned_headers = _clean_headers(v, where)
+                if cleaned_headers:
+                    clean["headers"] = cleaned_headers
             elif k.lower().replace("_", "") in ("apikey", "key", "token"):
                 _config_warnings.append(f"{where}.{k}: keys are not read from config.json; use [key].")
             else:
@@ -589,7 +679,7 @@ BANNER = r"""
   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
 /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
-                                          v2.8.18
+                                          v2.8.19
         Clean & Harmless — Multi-service LLM chat
 """
 
@@ -609,6 +699,7 @@ _temperature: float = 0.7
 _max_tokens: Optional[int] = None
 _stream_mode: bool = False  # default batch mode: safer on browser terminals
 _last_assistant_text: str = ""
+_last_model_used: Optional[str] = None   # the "model" a reply says it was produced by
 _turn_guard_enabled: bool = False  # opt-in: stops AI from generating fake user/assistant turns
 
 # Image mode defaults (not persisted in config)
@@ -1069,7 +1160,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
     cached = _models_cache.get(provider)
     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
         return cached[1]
-    headers = {"User-Agent": "NekoChat/2.8.18"}
+    headers = {"User-Agent": "NekoChat/2.8.19"}
     if spec.get("key_env"):
         key = get_api_key(provider)
         if key:
@@ -1110,6 +1201,18 @@ def _model_from_text(text: str, provider: str, ids: Optional[list[str]]) -> str:
         return text
     return make_model_string(provider, text)
 
+def _vendor_summary(ids: list[str]) -> str:
+    """Count per vendor (the part before the first '/'), biggest first."""
+    counts: dict[str, int] = {}
+    for m in ids:
+        head = m.lstrip("~").split("/", 1)[0] if "/" in m else "(other)"
+        counts[head] = counts.get(head, 0) + 1
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    top = items[:30]
+    more = f" · … {len(items) - len(top)} more" if len(items) > len(top) else ""
+    return f"\n{Fore.YELLOW}Vendors:{Style.RESET_ALL} " + " · ".join(f"{k} {v}" for k, v in top) + more
+
+
 def _pick_model(provider: str) -> Optional[str]:
     """Let the user choose a model of one service. Returns the stored string or None (cancelled)."""
     spec = PROVIDERS[provider]
@@ -1121,14 +1224,24 @@ def _pick_model(provider: str) -> Optional[str]:
     if ids:
         shown = ids
         if len(ids) > 25:
+            big = len(ids) > 100
+            if big:
+                print(_vendor_summary(ids))
             flt = _ask(
-                f"\n{Fore.CYAN}[+] {len(ids)} models. Filter (substring, Enter=show all): {Style.RESET_ALL}"
+                f"\n{Fore.CYAN}[+] {len(ids)} models. Filter (substring"
+                + (", e.g. a vendor such as 'openai/' or ':free'" if big else "")
+                + f"; Enter=show all): {Style.RESET_ALL}"
             ).lower()
             if flt:
                 shown = [m for m in ids if flt in m.lower()]
                 if not shown:
                     print(f"{Fore.RED}[!] No model matches '{flt}'.{Style.RESET_ALL}")
                     return None
+            elif big and _ask(
+                f"{Fore.CYAN}[+] That prints {len(ids)} lines. Show them all? (y/N): {Style.RESET_ALL}"
+            ).lower() not in ("y", "yes"):
+                print(f"{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
+                return None
         print(f"\n{Fore.YELLOW}Available models ({spec['label']}):{Style.RESET_ALL}")
         for i, m in enumerate(shown, 1):
             marker = f"{Fore.GREEN}*{Style.RESET_ALL}" if make_model_string(provider, m) == current_model else " "
@@ -1428,6 +1541,37 @@ def set_key() -> None:
 
     _enter_key(name)
 
+def _key_check_url(name: str) -> Optional[str]:
+    """A URL that answers 401/403 to a bad key: the service's own check, or its model list when
+    that list needs a key. None when there is no way to tell."""
+    spec = PROVIDERS[name]
+    if spec.get("key_check_url"):
+        return str(spec["key_check_url"])
+    if spec.get("key_env") and spec.get("models_url") and not spec.get("models_public"):
+        return str(spec["models_url"])
+    return None
+
+
+def _check_key(name: str, key: str) -> tuple[Optional[bool], Optional[int]]:
+    """Ask the service whether it accepts the key: (True|False|None, HTTP status). None = could not tell."""
+    spec = PROVIDERS[name]
+    url, missing = _expand_env(str(_key_check_url(name)), spec.get("vars"))
+    if missing:
+        print(f"{Fore.YELLOW}[~] Cannot check the key yet: {', '.join(missing)} is not set.{Style.RESET_ALL}")
+        return None, None
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {key}", "User-Agent": "NekoChat/2.8.19"}, timeout=10)
+    except requests.RequestException as e:
+        print(f"{Fore.YELLOW}[~] Could not check the key ({type(e).__name__}); keeping it.{Style.RESET_ALL}")
+        return None, None
+    if r.status_code in (401, 403):
+        return False, r.status_code
+    if r.status_code < 400:
+        return True, r.status_code
+    print(f"{Fore.YELLOW}[~] Could not check the key (HTTP {r.status_code}); keeping it.{Style.RESET_ALL}")
+    return None, r.status_code
+
+
 def _enter_key(name: str, note: bool = True) -> bool:
     """Ask for the key of a service (hidden input). True if a key is now set for this session."""
     env = PROVIDERS[name]["key_env"]
@@ -1457,6 +1601,16 @@ def _enter_key(name: str, note: bool = True) -> bool:
         print(f"{Fore.RED}[!] A key must not contain spaces or line breaks.{Style.RESET_ALL}")
         return False
 
+    if _key_check_url(name) and _ask(
+        f"{Fore.CYAN}[+] Check the key with {PROVIDERS[name]['label']} now? (Y/n): {Style.RESET_ALL}"
+    ).lower() in ("", "y", "yes"):
+        accepted, status = _check_key(name, value)
+        if accepted is False:
+            print(f"{Fore.RED}[!] {PROVIDERS[name]['label']} rejected this key (HTTP {status}). "
+                  f"It was not kept - check it and try again.{Style.RESET_ALL}")
+            return False
+        if accepted:
+            print(f"{Fore.GREEN}[OK] {PROVIDERS[name]['label']} accepted the key.{Style.RESET_ALL}")
     _session_keys[name] = value
     print(f"{Fore.GREEN}[OK] Key for {name} set for this session ({_mask_key(value)}).{Style.RESET_ALL}")
 
@@ -1539,6 +1693,13 @@ def select_service() -> None:
         return
     current_model = model
     print(f"{Fore.GREEN}[OK] Service: {name}  Model: {current_model}{Style.RESET_ALL}")
+    extras = []
+    if PROVIDERS[name].get("extra_body"):
+        extras.append(f"extra_body ({', '.join(PROVIDERS[name]['extra_body'])})")
+    if PROVIDERS[name].get("headers"):
+        extras.append(f"headers ({', '.join(PROVIDERS[name]['headers'])})")
+    if extras:
+        print(f"{Fore.YELLOW}[~] Extra request settings from config.json: {'; '.join(extras)}.{Style.RESET_ALL}")
     save_config(build_config())
 
 # ============ SYSTEM PROMPT ============
@@ -2248,6 +2409,8 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
 def send_chat(
     messages: list[dict[str, str]], stream: bool = True
 ) -> Optional[requests.Response]:
+    global _last_model_used
+    _last_model_used = None
     for scope, pname, reason in _active_plugins()[1]:
         _warn_once(f"plugin:{scope}:{pname}:{reason}", f"Plugin '{pname}' ({scope}) is not used: {reason}.")
     eff = _effective_settings()
@@ -2263,6 +2426,7 @@ def send_chat(
     spec = PROVIDERS[provider]
 
     payload: dict[str, object] = {
+        **copy.deepcopy(spec.get("extra_body") or {}),   # fixed fields from config.json (reserved keys were dropped there)
         "model": model_id,
         "messages": messages,
         "stream": stream,
@@ -2272,8 +2436,9 @@ def send_chat(
         payload["max_tokens"] = eff["max_tokens"]
 
     headers = {
+        **(spec.get("headers") or {}),   # extra headers first: what NekoChat sets itself always wins
         "Content-Type": "application/json",
-        "User-Agent": "NekoChat/2.8.18",
+        "User-Agent": "NekoChat/2.8.19",
         **auth_headers,
     }
 
@@ -2294,8 +2459,10 @@ def send_chat(
             )
         elif code in (401, 403) and spec.get("key_env"):
             detail = f" — {reason}" if reason else ""
+            used_key = get_api_key(provider)
+            used = f" Key used: {key_source(provider)} {_mask_key(used_key)}." if used_key else ""
             print(
-                f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}. "
+                f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}.{used} "
                 f"Check {spec['key_env']}{_key_hint(spec)}.{Style.RESET_ALL}"
             )
         elif code is not None and code >= 500:
@@ -2306,12 +2473,35 @@ def send_chat(
         else:
             detail = f" — {reason}" if reason else ""
             print(f"{Fore.RED}[!] HTTP Error: {e}{detail}{Style.RESET_ALL}")
-            if code == 402 and spec.get("fail_hint"):
-                print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
+            if code == 402 and (spec.get("payment_hint") or spec.get("fail_hint")):
+                print(f"{Fore.YELLOW}    {spec.get('payment_hint') or spec['fail_hint']}{Style.RESET_ALL}")
         return None
     except Exception as e:
         print(f"{Fore.RED}[!] Request failed: {e}{Style.RESET_ALL}")
         return None
+
+def _set_model_used(name: str) -> None:
+    global _last_model_used
+    _last_model_used = name
+
+
+def _report_model_used() -> None:
+    """After a reply: say which model really answered, when that differs from the one asked for
+    (fallbacks, ~aliases, openrouter/auto). Only for services that route (see show_model_used)."""
+    used = _last_model_used
+    if not used:
+        return
+    eff = _effective_settings()["model"]
+    provider, requested = split_model(eff)
+    spec = PROVIDERS[provider]
+    if not (spec.get("show_model_used") or "models" in (spec.get("extra_body") or {})):
+        return
+    def base(m: str) -> str:
+        return m.lstrip("~").split(":", 1)[0].lower()
+    if base(used).startswith(base(requested)):   # same model (a dated snapshot, a :floor variant, ...)
+        return
+    print(f"{Fore.CYAN}[model used: {used}]{Style.RESET_ALL}")
+
 
 def stream_response(response: requests.Response) -> tuple[str, bool]:
     full_text = ""   # accepted text (after turn-guard truncation)
@@ -2343,6 +2533,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
                 continue
             if not isinstance(data, dict):
                 continue
+            if not _last_model_used and isinstance(data.get("model"), str):
+                _set_model_used(data["model"])
             if data.get("error"):  # e.g. OpenRouter: {"error": {...}, "choices": [{"finish_reason": "error"}]}
                 stream_error = _error_message(data["error"])
                 break
@@ -2420,6 +2612,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
 def batch_response(response: requests.Response) -> tuple[str, bool]:
     try:
         data = response.json()
+        if isinstance(data, dict) and isinstance(data.get("model"), str):
+            _set_model_used(data["model"])
         choices = data.get("choices") or []
         if choices and isinstance(choices[0], dict):
             message = choices[0].get("message") or {}
@@ -2494,6 +2688,7 @@ def chat_once(user_input: str) -> bool:
     _last_assistant_text = assistant_text
     _session_last_text[_current_session] = assistant_text
     _save_session_atomic(_current_session)  # auto-save after every exchange
+    _report_model_used()
     try:
         _discord_auto_after_reply()
     except Exception as e:  # a delivery problem must never break the chat itself

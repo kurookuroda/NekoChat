@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NekoChat v2.8.18 詳細な使い方ガイド</title>
+<title>NekoChat v2.8.19 詳細な使い方ガイド</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
 <body>
 
 <header>
-  <h1>NekoChat v2.8.18</h1>
+  <h1>NekoChat v2.8.19</h1>
   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
 </header>
 
@@ -266,6 +266,8 @@ a:hover { text-decoration: underline; }
 <span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
 <span class="info">[~] Mistral needs an API key.</span>
 <span class="out">MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):</span>
+<span class="prompt">[+]</span> <span class="out">Check the key with Mistral now? (Y/n): </span>
+<span class="out">[OK] Mistral accepted the key.</span>
 <span class="out">[OK] Key for mistral set for this session (...a1b2).</span>
 <span class="prompt">[+]</span> <span class="out">Save to keys.json? (y/N): </span><span class="cmd">y</span>
 <span class="out">[OK] Saved to keys.json (owner-only permissions).</span>
@@ -318,7 +320,7 @@ a:hover { text-decoration: underline; }
   </div>
   <table>
     <tr><th>サービス</th><th>環境変数</th><th>補足</th></tr>
-    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402）</td></tr>
+    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。ときどき不安定です（過去に HTTP 500 / 402 になったことがあります）</td></tr>
     <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>https://enter.pollinations.ai/keys</code> でキーを取得。モデルの一覧は、キーなしでも読めます</td></tr>
     <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
     <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
@@ -333,7 +335,22 @@ a:hover { text-decoration: underline; }
     <li>OpenRouter の接尾辞は、ID の一部として、そのまま使えます。<code>:nitro</code>（いちばん速いプロバイダ）、<code>:floor</code>（いちばん安いプロバイダ）、<code>:free</code>（無料モデル）と、<code>~openai/gpt-latest</code> のような <code>~</code> 付きの別名です。</li>
     <li>ID が <code>:free</code> で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。</li>
     <li>キーは、<code>https://openrouter.ai/keys</code> で作ります。モデルの一覧は、キーなしでも、まず取得を試します。</li>
-    <li>フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。</li>
+    <li><strong>ルーティングとフォールバック</strong>: OpenRouter は、追加のリクエスト項目を受け付けます。たとえば、<code>models</code>（失敗したときに、順に試す、別のモデルの配列）と、<code>provider</code>（ルーティング。たとえば <code>{"sort": "throughput"}</code>）です。<code>config.json</code> の <code>providers</code> に、<code>extra_body</code> として書くと、そのサービスの、<strong>すべてのリクエストに</strong>足されます。</li>
+  </ul>
+  <div class="terminal">
+<span class="out">{</span>
+<span class="out">  "providers": {</span>
+<span class="out">    "openrouter": {</span>
+<span class="out">      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},</span>
+<span class="out">      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}</span>
+<span class="out">    }</span>
+<span class="out">  }</span>
+<span class="out">}</span>
+  </div>
+  <ul>
+    <li>この設定で、<code>meta-llama/llama-3.3-70b-instruct:nitro</code> を選ぶと、まず、いちばん速いプロバイダで、そのモデルを試し、失敗したら、いちばん安い <code>gpt-4o-mini</code> のプロバイダに、切り替わります。<code>headers</code>（どちらも省略できます）は、OpenRouter に表示される、アプリ名などの、HTTP ヘッダを足します。</li>
+    <li><strong>実際に答えたモデル</strong>: 選んだモデルと違うモデルが答えたとき（フォールバック、<code>~</code> の別名、<code>openrouter/auto</code>）は、返信のあとに、<code>[model used: …]</code> と表示されます。料金は、実際に使われたモデルで決まるためです（同じモデルの日付つきの版や、<code>:floor</code> などの変種は、表示しません）。</li>
+    <li><strong>402</strong>: クレジットを使い切ったか、残高がマイナスです（無料モデルも、そのときは 402 になります）。</li>
   </ul>
 
   <h3>自分のサービスを追加する</h3>
@@ -352,7 +369,8 @@ a:hover { text-decoration: underline; }
 <span class="out">}</span>
   </div>
   <ul>
-    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code></li>
+    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code> / <code>extra_body</code> / <code>headers</code></li>
+    <li><code>extra_body</code> は、そのサービスの、すべてのリクエストに足す、固定の項目です（<code>model</code>、<code>messages</code>、<code>stream</code>、<code>temperature</code>、<code>max_tokens</code> は、NekoChat が決めるので、ここに書いても、無視されます）。<code>headers</code> は、HTTP ヘッダを足します（10個まで。<code>Authorization</code>、<code>Content-Type</code>、<code>User-Agent</code> などは、置き換えられません。<code>key</code>、<code>token</code>、<code>secret</code>、<code>auth</code>、<code>password</code> を含む名前は、認証情報とみなして、受け付けません。キーは <code>[key]</code> を使ってください）。設定があるサービスを <code>[service]</code> で選ぶと、そのことが表示されます。</li>
     <li>URL の <code>${VAR}</code> は、環境変数、サービスの <code>vars</code> の順で埋められます。</li>
     <li><code>https://</code> のみ（<code>localhost</code> に限り <code>http://</code> も可）。キーをここに書いても読まれません。</li>
     <li>セッションは <code>サービス/モデルID</code> を覚えているので、別のマシンに移すときは <code>providers</code> も一緒に移してください。</li>
@@ -791,10 +809,10 @@ a:hover { text-decoration: underline; }
   <p>返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で <code>Stream error: …</code> と原因が表示され、途中までの返信は、<strong>履歴に保存されません</strong>（<code>この応答は履歴に追加しませんでした</code> と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。</p>
 
   <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
-  <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
+  <p>旧端点は、ときどき不安定で、過去に、停止したり、有料になったりしたことがあります。エラーが続くときは、少し待つか、<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
 
   <h3>認証エラー（HTTP 401 / 403）</h3>
-  <p>キーが違う、または期限切れです。<code>[key]</code> で入れ直してください（環境変数が優先されていないかも確認を。<code>[key]</code> の一覧に取得元が出ます）。</p>
+  <p>キーが違う、または期限切れです。メッセージに、使われたキーの取得元（<code>session</code>、<code>env</code>、<code>keys.json</code>）と、末尾4文字が出ます。<code>[key]</code> で入れ直してください（入れた直後に、そのサービスで確認できます）。環境変数が優先されていないかも、確認してください。</p>
 
   <h3>モデルが応答しない</h3>
   <p><code>[model]</code> で別のモデルに切り替えるか、<code>[service]</code> で別のサービスを試してください。モデルの可用性はサービスごとに変動します。</p>

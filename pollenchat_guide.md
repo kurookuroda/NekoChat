@@ -1,4 +1,4 @@
-# NekoChat 使い方ガイド（v2.8.18）
+# NekoChat 使い方ガイド（v2.8.19）
 
 NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI・OpenRouter を内蔵し、`config.json` で自分のサービスも追加できます。
 
@@ -59,6 +59,8 @@ Services:
 [+] Select service (number or name, Enter=cancel): 4
 [~] Mistral needs an API key.
 MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):
+[+] Check the key with Mistral now? (Y/n):
+[OK] Mistral accepted the key.
 [OK] Key for mistral set for this session (...a1b2).
 [+] Save to keys.json? (y/N): y
 [OK] Saved to keys.json (owner-only permissions).
@@ -114,7 +116,7 @@ Services that need an API key:
 
 | サービス | 環境変数 | 補足 |
 |----------|----------|------|
-| pollinations | なし | 匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402） |
+| pollinations | なし | 匿名の旧端点。ときどき不安定です（過去に HTTP 500 / 402 になったことがあります） |
 | pollinations-key | `POLLINATIONS_API_KEY` | `https://enter.pollinations.ai/keys` でキーを取得。モデルの一覧は、キーなしでも読めます |
 | nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
 | mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
@@ -130,7 +132,20 @@ OpenRouter は、1つのキーで、たくさんのモデルを使えるサー�
 - OpenRouter の接尾辞は、ID の一部として、そのまま使えます。`:nitro`（いちばん速いプロバイダ）、`:floor`（いちばん安いプロバイダ）、`:free`（無料モデル）と、`~openai/gpt-latest` のような `~` 付きの別名です。
 - ID が `:free` で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。
 - キーは、`https://openrouter.ai/keys` で作ります。モデルの一覧は、キーなしでも、まず取得を試します。
-- フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。
+- **ルーティングとフォールバック**: OpenRouter は、追加のリクエスト項目を受け付けます。たとえば、`models`（失敗したときに、順に試す、別のモデルの配列）と、`provider`（ルーティング。たとえば `{"sort": "throughput"}`）です。`config.json` の `providers` に、`extra_body` として書くと、そのサービスの、**すべてのリクエストに**足されます。
+```json
+{
+  "providers": {
+    "openrouter": {
+      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},
+      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}
+    }
+  }
+}
+```
+  この設定で、`meta-llama/llama-3.3-70b-instruct:nitro` を選ぶと、まず、いちばん速いプロバイダで、そのモデルを試し、失敗したら、いちばん安い `gpt-4o-mini` のプロバイダに、切り替わります。`headers`（どちらも省略できます）は、OpenRouter に表示される、アプリ名などの、HTTP ヘッダを足します。
+- **実際に答えたモデル**: 選んだモデルと違うモデルが答えたとき（フォールバック、`~` の別名、`openrouter/auto`）は、返信のあとに、`[model used: …]` と表示されます。料金は、実際に使われたモデルで決まるためです（同じモデルの日付つきの版や、`:floor` などの変種は、表示しません）。
+- **402**: クレジットを使い切ったか、残高がマイナスです（無料モデルも、そのときは 402 になります）。
 
 ### 自分のサービスを追加する
 
@@ -150,7 +165,8 @@ OpenRouter は、1つのキーで、たくさんのモデルを使えるサー�
 }
 ```
 
-- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars`
+- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars` / `extra_body` / `headers`
+- `extra_body` は、そのサービスの、すべてのリクエストに足す、固定の項目です（`model`、`messages`、`stream`、`temperature`、`max_tokens` は、NekoChat が決めるので、ここに書いても、無視されます）。`headers` は、HTTP ヘッダを足します（10個まで。`Authorization`、`Content-Type`、`User-Agent` などは、置き換えられません。`key`、`token`、`secret`、`auth`、`password` を含む名前は、認証情報とみなして、受け付けません。キーは `[key]` を使ってください）。設定があるサービスを `[service]` で選ぶと、そのことが表示されます。
 - URL の `${VAR}` は、環境変数、サービスの `vars` の順で埋められます。
 - `https://` のみ（`localhost` に限り `http://` も可）。キーをここに書いても読まれません。
 - セッションは `サービス/モデルID` を覚えているので、別のマシンに移すときは `providers` も一緒に移してください。
@@ -597,11 +613,11 @@ Bye bye, Taro!
 
 ### HTTP 500 / 402（PollinationsAI の匿名端点）
 
-旧端点が停止している、または無料でなくなっている可能性があります。`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
+旧端点は、ときどき不安定で、過去に、停止したり、有料になったりしたことがあります。エラーが続くときは、少し待つか、`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
 
 ### 認証エラー（HTTP 401 / 403）
 
-キーが違う、または期限切れです。`[key]` で入れ直してください（環境変数が優先されていないかも確認を。`[key]` の一覧に取得元が出ます）。
+キーが違う、または期限切れです。メッセージに、使われたキーの取得元（`session`、`env`、`keys.json`）と、末尾4文字が出ます。`[key]` で入れ直してください（入れた直後に、そのサービスで確認できます）。環境変数が優先されていないかも、確認してください。
 
 ### モデルが応答しない
 

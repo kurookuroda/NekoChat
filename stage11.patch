@@ -1,0 +1,615 @@
+diff --git a/README.md b/README.md
+index 5938668..463fad9 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# NekoChat v2.8.18
++# NekoChat v2.8.19
+ 
+ A clean, harmless CLI chat client for several LLM services.
+ 
+@@ -50,7 +50,7 @@ Type `[service]` to see the services, pick one, enter its API key if it needs on
+ 
+ | Service | Key | Notes |
+ |---------|-----|-------|
+-| `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It may be down or no longer free (HTTP 500 / 402) — switch service if so |
++| `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It has been unstable at times (HTTP 500 / 402 in the past); if it fails, retry later or switch service |
+ | `pollinations-key` | `POLLINATIONS_API_KEY` | `gen.pollinations.ai`; keys at https://enter.pollinations.ai/keys. The model list can be read without a key |
+ | `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
+ | `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
+@@ -61,7 +61,22 @@ Free-tier limits differ per service and change over time; check each service's o
+ 
+ ### OpenRouter
+ 
+-OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. Routing options such as a list of fallback models are not configurable from NekoChat yet.
++OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. 
++
++**Routing and fallbacks.** OpenRouter takes extra request fields — for example `models` (a list of fallback models, tried in order) and `provider` (routing, e.g. `{"sort": "throughput"}`). Put them in the `providers` block of `config.json` as `extra_body`; they are added to every request of that service:
++
++```json
++{
++  "providers": {
++    "openrouter": {
++      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},
++      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}
++    }
++  }
++}
++```
++
++With this, picking `meta-llama/llama-3.3-70b-instruct:nitro` tries that model on the fastest provider first and falls back to the cheapest `gpt-4o-mini` provider if it fails. `headers` (both are optional) adds HTTP headers such as the app name shown on OpenRouter. When another model than the one you picked answers — a fallback, a `~` alias, `openrouter/auto` — NekoChat prints `[model used: …]` after the reply, because the cost follows the model that was actually used. (A dated snapshot of the same model, or a `:floor`-type variant, is not reported.) A 402 means the credits are used up or the balance is negative; free models answer 402 then too.
+ 
+ ### Where the key comes from
+ 
+@@ -71,7 +86,7 @@ NekoChat looks for a service's key in this order:
+ 2. The environment variable above (e.g. `export NVIDIA_API_KEY=...`, which also works from `~/.bashrc` in Termux)
+ 3. `keys.json`
+ 
+-`[key]` shows which source is in use (only the last 4 characters of a key are displayed), reads the key with hidden input, and asks whether to save it to `keys.json`. Enter `delete` at the key prompt to remove a stored key. `keys.json` is created with owner-only permissions and is listed in `.gitignore`. If you ever committed a real key, revoke it — Git history keeps it.
++`[key]` shows which source is in use (only the last 4 characters of a key are displayed), reads the key with hidden input, and, for services that can tell (OpenRouter, NVIDIA, Mistral, and custom services with a model list that needs a key), offers to check the key with the service right away — a key the service rejects is not kept. Then it asks whether to save it to `keys.json`. Enter `delete` at the key prompt to remove a stored key. A 401 from the service names where the key in use came from and its last 4 characters. `keys.json` is created with owner-only permissions and is listed in `.gitignore`. If you ever committed a real key, revoke it — Git history keeps it.
+ 
+ ### Model names
+ 
+@@ -100,7 +115,8 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
+ }
+ ```
+ 
+-- Fields: `chat_url`, `models_url` (`null` = no list), `key_env` (`null` = no key), `label`, `rate_hint`, `fail_hint`, `vars`.
++- Fields: `chat_url`, `models_url` (`null` = no list), `key_env` (`null` = no key), `label`, `rate_hint`, `fail_hint`, `vars`, `extra_body` and `headers`.
++- `extra_body` is an object of fixed fields added to every request of that service (`model`, `messages`, `stream`, `temperature` and `max_tokens` stay under NekoChat's control and are ignored there). `headers` adds HTTP headers (at most 10; `Authorization`, `Content-Type`, `User-Agent` and similar cannot be replaced, and names that look like credentials — `key`, `token`, `secret`, `auth`, `password` — are refused: use `[key]`). `[service]` tells you when a service has them.
+ - `${VAR}` in a URL is filled from the environment first, then from the service's `vars`.
+ - Only `https://` URLs are accepted (plain `http://` only for `localhost`). Service names use `a-z`, `0-9` and `-`.
+ - Keys are **not** read from this block — use `[key]`, `keys.json` or environment variables. Invalid entries are skipped with a warning at startup.
+diff --git a/pollenchat.py b/pollenchat.py
+index e7bb3a8..3e8a4fd 100644
+--- a/pollenchat.py
++++ b/pollenchat.py
+@@ -1,9 +1,33 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+ """
+-NekoChat v2.8.18 — Clean CLI chat client for several LLM services
++NekoChat v2.8.19 — Clean CLI chat client for several LLM services
+ (the file is still named pollenchat.py)
+ 
++Changes in v2.8.19:
++  - "providers" in config.json take two more fields: "extra_body" (fixed fields
++    added to every request of that service, e.g. OpenRouter's {"models": [...],
++    "provider": {...}} for fallback models and routing; model / messages /
++    stream / temperature / max_tokens stay under NekoChat's control) and
++    "headers" (extra HTTP headers such as HTTP-Referer; Authorization,
++    Content-Type etc. cannot be replaced, credential-like names are refused:
++    keys belong in [key]). [service] says when a service has them.
++  - [model used: X] after a reply when OpenRouter (or any service whose
++    extra_body has "models") answered with another model than the one asked
++    for (fallbacks, ~aliases, openrouter/auto); dated snapshots and :floor-type
++    suffixes do not count as different.
++  - A 401/403 names where the key came from and its last 4 characters; a 402
++    from OpenRouter explains credits.
++  - After a key is typed ([key], [service]) NekoChat offers to check it with the
++    service at once (OpenRouter /api/v1/key; NVIDIA, Mistral and custom services
++    through their model list) and drops a rejected key instead of keeping it.
++    A check that cannot be made (network, an unknown answer) is reported and
++    the key is kept.
++  - A model list over 100 entries first shows the count per vendor; Enter at
++    the filter asks before printing everything.
++  - The note for the anonymous PollinationsAI endpoint now says it is sometimes
++    unstable (before: "may be down or no longer free").
++
+ Changes in v2.8.18:
+   - OpenRouter is a built-in service ("openrouter", key in OPENROUTER_API_KEY,
+     keys at https://openrouter.ai/keys). Models are written as
+@@ -312,8 +336,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
+         "key_env": None,
+         "rate_hint": "PollinationsAI free tier has limits. Wait a moment and retry.",
+         "fail_hint": (
+-            "The anonymous legacy endpoint may be down or no longer free. Switch with [service], or set "
+-            "POLLINATIONS_API_KEY and use the pollinations-key service."
++            "The anonymous endpoint is sometimes unstable (it has gone down or asked for payment before). "
++            "Retry later, switch with [service], or set POLLINATIONS_API_KEY and use the pollinations-key service."
+         ),
+     },
+     "pollinations-key": {
+@@ -355,6 +379,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
+         "models_public": True,   # the list is tried without a key too
+         "key_env": "OPENROUTER_API_KEY",
+         "key_url": "https://openrouter.ai/keys",
++        "key_check_url": "https://openrouter.ai/api/v1/key",   # answers 401 for a bad key
++        "show_model_used": True,                                 # tell which model really answered
++        "payment_hint": (
++            "Out of credits, or the balance is negative (free models then answer 402 too). "
++            "Check your balance in your OpenRouter account."
++        ),
+         "rate_hint": (
+             "OpenRouter rate limit reached. Free (:free) models allow about 20 requests/minute and "
+             "50/day (1000/day once 10+ credits were bought). Wait a moment and retry."
+@@ -380,6 +410,58 @@ def _url_ok(url: str) -> bool:
+     """https only; plain http is accepted for a local server (e.g. Ollama)."""
+     return url.startswith("https://") or bool(_LOCAL_HTTP.match(url))
+ 
++_RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "temperature", "max_tokens"})
++_RESERVED_HEADERS = frozenset({"authorization", "content-type", "content-length", "host", "cookie", "user-agent"})
++_HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
++_CREDENTIAL_LIKE = re.compile(r"key|token|secret|auth|password", re.I)
++
++
++def _clean_extra_body(v: Any, where: str) -> Optional[dict[str, Any]]:
++    """extra_body: fixed fields added to every request of a service (OpenRouter's "models", ...)."""
++    if not isinstance(v, dict) or not all(isinstance(k, str) for k in v):
++        _config_warnings.append(f"{where}.extra_body: must be an object; ignored.")
++        return None
++    out: dict[str, Any] = {}
++    for k, val in v.items():
++        if k in _RESERVED_BODY_KEYS:
++            _config_warnings.append(f"{where}.extra_body.{k}: NekoChat sets this itself; ignored.")
++        else:
++            out[k] = val
++    try:
++        text = json.dumps(out, ensure_ascii=False)
++    except (TypeError, ValueError):
++        _config_warnings.append(f"{where}.extra_body: must be plain JSON; ignored.")
++        return None
++    if len(text) > 8000:
++        _config_warnings.append(f"{where}.extra_body: larger than 8000 characters; ignored.")
++        return None
++    return json.loads(text) or None
++
++
++def _clean_headers(v: Any, where: str) -> Optional[dict[str, str]]:
++    """headers: extra HTTP headers (HTTP-Referer, ...). Never credentials: those belong in [key]."""
++    if not isinstance(v, dict):
++        _config_warnings.append(f"{where}.headers: must be an object of strings; ignored.")
++        return None
++    out: dict[str, str] = {}
++    for k, val in v.items():
++        if not (isinstance(k, str) and isinstance(val, str) and _HEADER_NAME_RE.fullmatch(k)
++                and "\r" not in val and "\n" not in val and len(val) <= 300):
++            _config_warnings.append(f"{where}.headers: an entry was invalid (names: letters, digits, '-'; "
++                                    f"values: one line of text); ignored.")
++        elif k.lower() in _RESERVED_HEADERS:
++            _config_warnings.append(f"{where}.headers.{k}: NekoChat sets this itself; ignored.")
++        elif _CREDENTIAL_LIKE.search(k):
++            _config_warnings.append(f"{where}.headers.{k}: looks like a credential; keys are not read from "
++                                    f"config.json, use [key]; ignored.")
++        else:
++            out[k] = val
++    if len(out) > 10:
++        _config_warnings.append(f"{where}.headers: more than 10 headers; ignored.")
++        return None
++    return out or None
++
++
+ def apply_providers_config(block: object) -> None:
+     """Rebuild PROVIDERS from the built-ins plus the config.json block. Bad entries are
+     skipped with a warning (shown after the banner)."""
+@@ -415,6 +497,14 @@ def apply_providers_config(block: object) -> None:
+                     clean["vars"] = dict(v)
+                 else:
+                     _config_warnings.append(f"{where}.vars: must be an object of strings; ignored.")
++            elif k == "extra_body":
++                cleaned_body = _clean_extra_body(v, where)
++                if cleaned_body:
++                    clean["extra_body"] = cleaned_body
++            elif k == "headers":
++                cleaned_headers = _clean_headers(v, where)
++                if cleaned_headers:
++                    clean["headers"] = cleaned_headers
+             elif k.lower().replace("_", "") in ("apikey", "key", "token"):
+                 _config_warnings.append(f"{where}.{k}: keys are not read from config.json; use [key].")
+             else:
+@@ -589,7 +679,7 @@ BANNER = r"""
+   /  |/ / _ \/ //_/ __ \   / /   / __ \/ __ `/ __/
+  / /|  /  __/ ,< / /_/ /  / /___/ / / / /_/ / /_
+ /_/ |_/\___/_/|_|\____/   \____/_/ /_/\__,_/\__/
+-                                          v2.8.18
++                                          v2.8.19
+         Clean & Harmless — Multi-service LLM chat
+ """
+ 
+@@ -609,6 +699,7 @@ _temperature: float = 0.7
+ _max_tokens: Optional[int] = None
+ _stream_mode: bool = False  # default batch mode: safer on browser terminals
+ _last_assistant_text: str = ""
++_last_model_used: Optional[str] = None   # the "model" a reply says it was produced by
+ _turn_guard_enabled: bool = False  # opt-in: stops AI from generating fake user/assistant turns
+ 
+ # Image mode defaults (not persisted in config)
+@@ -1069,7 +1160,7 @@ def fetch_models_for(provider: str, force: bool = False) -> Optional[list[str]]:
+     cached = _models_cache.get(provider)
+     if cached and not force and time.time() - cached[0] < MODELS_CACHE_TTL:
+         return cached[1]
+-    headers = {"User-Agent": "NekoChat/2.8.18"}
++    headers = {"User-Agent": "NekoChat/2.8.19"}
+     if spec.get("key_env"):
+         key = get_api_key(provider)
+         if key:
+@@ -1110,6 +1201,18 @@ def _model_from_text(text: str, provider: str, ids: Optional[list[str]]) -> str:
+         return text
+     return make_model_string(provider, text)
+ 
++def _vendor_summary(ids: list[str]) -> str:
++    """Count per vendor (the part before the first '/'), biggest first."""
++    counts: dict[str, int] = {}
++    for m in ids:
++        head = m.lstrip("~").split("/", 1)[0] if "/" in m else "(other)"
++        counts[head] = counts.get(head, 0) + 1
++    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
++    top = items[:30]
++    more = f" · … {len(items) - len(top)} more" if len(items) > len(top) else ""
++    return f"\n{Fore.YELLOW}Vendors:{Style.RESET_ALL} " + " · ".join(f"{k} {v}" for k, v in top) + more
++
++
+ def _pick_model(provider: str) -> Optional[str]:
+     """Let the user choose a model of one service. Returns the stored string or None (cancelled)."""
+     spec = PROVIDERS[provider]
+@@ -1121,14 +1224,24 @@ def _pick_model(provider: str) -> Optional[str]:
+     if ids:
+         shown = ids
+         if len(ids) > 25:
++            big = len(ids) > 100
++            if big:
++                print(_vendor_summary(ids))
+             flt = _ask(
+-                f"\n{Fore.CYAN}[+] {len(ids)} models. Filter (substring, Enter=show all): {Style.RESET_ALL}"
++                f"\n{Fore.CYAN}[+] {len(ids)} models. Filter (substring"
++                + (", e.g. a vendor such as 'openai/' or ':free'" if big else "")
++                + f"; Enter=show all): {Style.RESET_ALL}"
+             ).lower()
+             if flt:
+                 shown = [m for m in ids if flt in m.lower()]
+                 if not shown:
+                     print(f"{Fore.RED}[!] No model matches '{flt}'.{Style.RESET_ALL}")
+                     return None
++            elif big and _ask(
++                f"{Fore.CYAN}[+] That prints {len(ids)} lines. Show them all? (y/N): {Style.RESET_ALL}"
++            ).lower() not in ("y", "yes"):
++                print(f"{Fore.YELLOW}[~] Cancelled.{Style.RESET_ALL}")
++                return None
+         print(f"\n{Fore.YELLOW}Available models ({spec['label']}):{Style.RESET_ALL}")
+         for i, m in enumerate(shown, 1):
+             marker = f"{Fore.GREEN}*{Style.RESET_ALL}" if make_model_string(provider, m) == current_model else " "
+@@ -1428,6 +1541,37 @@ def set_key() -> None:
+ 
+     _enter_key(name)
+ 
++def _key_check_url(name: str) -> Optional[str]:
++    """A URL that answers 401/403 to a bad key: the service's own check, or its model list when
++    that list needs a key. None when there is no way to tell."""
++    spec = PROVIDERS[name]
++    if spec.get("key_check_url"):
++        return str(spec["key_check_url"])
++    if spec.get("key_env") and spec.get("models_url") and not spec.get("models_public"):
++        return str(spec["models_url"])
++    return None
++
++
++def _check_key(name: str, key: str) -> tuple[Optional[bool], Optional[int]]:
++    """Ask the service whether it accepts the key: (True|False|None, HTTP status). None = could not tell."""
++    spec = PROVIDERS[name]
++    url, missing = _expand_env(str(_key_check_url(name)), spec.get("vars"))
++    if missing:
++        print(f"{Fore.YELLOW}[~] Cannot check the key yet: {', '.join(missing)} is not set.{Style.RESET_ALL}")
++        return None, None
++    try:
++        r = requests.get(url, headers={"Authorization": f"Bearer {key}", "User-Agent": "NekoChat/2.8.19"}, timeout=10)
++    except requests.RequestException as e:
++        print(f"{Fore.YELLOW}[~] Could not check the key ({type(e).__name__}); keeping it.{Style.RESET_ALL}")
++        return None, None
++    if r.status_code in (401, 403):
++        return False, r.status_code
++    if r.status_code < 400:
++        return True, r.status_code
++    print(f"{Fore.YELLOW}[~] Could not check the key (HTTP {r.status_code}); keeping it.{Style.RESET_ALL}")
++    return None, r.status_code
++
++
+ def _enter_key(name: str, note: bool = True) -> bool:
+     """Ask for the key of a service (hidden input). True if a key is now set for this session."""
+     env = PROVIDERS[name]["key_env"]
+@@ -1457,6 +1601,16 @@ def _enter_key(name: str, note: bool = True) -> bool:
+         print(f"{Fore.RED}[!] A key must not contain spaces or line breaks.{Style.RESET_ALL}")
+         return False
+ 
++    if _key_check_url(name) and _ask(
++        f"{Fore.CYAN}[+] Check the key with {PROVIDERS[name]['label']} now? (Y/n): {Style.RESET_ALL}"
++    ).lower() in ("", "y", "yes"):
++        accepted, status = _check_key(name, value)
++        if accepted is False:
++            print(f"{Fore.RED}[!] {PROVIDERS[name]['label']} rejected this key (HTTP {status}). "
++                  f"It was not kept - check it and try again.{Style.RESET_ALL}")
++            return False
++        if accepted:
++            print(f"{Fore.GREEN}[OK] {PROVIDERS[name]['label']} accepted the key.{Style.RESET_ALL}")
+     _session_keys[name] = value
+     print(f"{Fore.GREEN}[OK] Key for {name} set for this session ({_mask_key(value)}).{Style.RESET_ALL}")
+ 
+@@ -1539,6 +1693,13 @@ def select_service() -> None:
+         return
+     current_model = model
+     print(f"{Fore.GREEN}[OK] Service: {name}  Model: {current_model}{Style.RESET_ALL}")
++    extras = []
++    if PROVIDERS[name].get("extra_body"):
++        extras.append(f"extra_body ({', '.join(PROVIDERS[name]['extra_body'])})")
++    if PROVIDERS[name].get("headers"):
++        extras.append(f"headers ({', '.join(PROVIDERS[name]['headers'])})")
++    if extras:
++        print(f"{Fore.YELLOW}[~] Extra request settings from config.json: {'; '.join(extras)}.{Style.RESET_ALL}")
+     save_config(build_config())
+ 
+ # ============ SYSTEM PROMPT ============
+@@ -2248,6 +2409,8 @@ def _server_error_text(resp: Optional[requests.Response]) -> str:
+ def send_chat(
+     messages: list[dict[str, str]], stream: bool = True
+ ) -> Optional[requests.Response]:
++    global _last_model_used
++    _last_model_used = None
+     for scope, pname, reason in _active_plugins()[1]:
+         _warn_once(f"plugin:{scope}:{pname}:{reason}", f"Plugin '{pname}' ({scope}) is not used: {reason}.")
+     eff = _effective_settings()
+@@ -2263,6 +2426,7 @@ def send_chat(
+     spec = PROVIDERS[provider]
+ 
+     payload: dict[str, object] = {
++        **copy.deepcopy(spec.get("extra_body") or {}),   # fixed fields from config.json (reserved keys were dropped there)
+         "model": model_id,
+         "messages": messages,
+         "stream": stream,
+@@ -2272,8 +2436,9 @@ def send_chat(
+         payload["max_tokens"] = eff["max_tokens"]
+ 
+     headers = {
++        **(spec.get("headers") or {}),   # extra headers first: what NekoChat sets itself always wins
+         "Content-Type": "application/json",
+-        "User-Agent": "NekoChat/2.8.18",
++        "User-Agent": "NekoChat/2.8.19",
+         **auth_headers,
+     }
+ 
+@@ -2294,8 +2459,10 @@ def send_chat(
+             )
+         elif code in (401, 403) and spec.get("key_env"):
+             detail = f" — {reason}" if reason else ""
++            used_key = get_api_key(provider)
++            used = f" Key used: {key_source(provider)} {_mask_key(used_key)}." if used_key else ""
+             print(
+-                f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}. "
++                f"{Fore.RED}[!] {spec['label']}: authentication failed (HTTP {code}){detail}.{used} "
+                 f"Check {spec['key_env']}{_key_hint(spec)}.{Style.RESET_ALL}"
+             )
+         elif code is not None and code >= 500:
+@@ -2306,13 +2473,36 @@ def send_chat(
+         else:
+             detail = f" — {reason}" if reason else ""
+             print(f"{Fore.RED}[!] HTTP Error: {e}{detail}{Style.RESET_ALL}")
+-            if code == 402 and spec.get("fail_hint"):
+-                print(f"{Fore.YELLOW}    {spec['fail_hint']}{Style.RESET_ALL}")
++            if code == 402 and (spec.get("payment_hint") or spec.get("fail_hint")):
++                print(f"{Fore.YELLOW}    {spec.get('payment_hint') or spec['fail_hint']}{Style.RESET_ALL}")
+         return None
+     except Exception as e:
+         print(f"{Fore.RED}[!] Request failed: {e}{Style.RESET_ALL}")
+         return None
+ 
++def _set_model_used(name: str) -> None:
++    global _last_model_used
++    _last_model_used = name
++
++
++def _report_model_used() -> None:
++    """After a reply: say which model really answered, when that differs from the one asked for
++    (fallbacks, ~aliases, openrouter/auto). Only for services that route (see show_model_used)."""
++    used = _last_model_used
++    if not used:
++        return
++    eff = _effective_settings()["model"]
++    provider, requested = split_model(eff)
++    spec = PROVIDERS[provider]
++    if not (spec.get("show_model_used") or "models" in (spec.get("extra_body") or {})):
++        return
++    def base(m: str) -> str:
++        return m.lstrip("~").split(":", 1)[0].lower()
++    if base(used).startswith(base(requested)):   # same model (a dated snapshot, a :floor variant, ...)
++        return
++    print(f"{Fore.CYAN}[model used: {used}]{Style.RESET_ALL}")
++
++
+ def stream_response(response: requests.Response) -> tuple[str, bool]:
+     full_text = ""   # accepted text (after turn-guard truncation)
+     shown = 0        # how many chars of full_text are already on screen
+@@ -2343,6 +2533,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+                 continue
+             if not isinstance(data, dict):
+                 continue
++            if not _last_model_used and isinstance(data.get("model"), str):
++                _set_model_used(data["model"])
+             if data.get("error"):  # e.g. OpenRouter: {"error": {...}, "choices": [{"finish_reason": "error"}]}
+                 stream_error = _error_message(data["error"])
+                 break
+@@ -2420,6 +2612,8 @@ def stream_response(response: requests.Response) -> tuple[str, bool]:
+ def batch_response(response: requests.Response) -> tuple[str, bool]:
+     try:
+         data = response.json()
++        if isinstance(data, dict) and isinstance(data.get("model"), str):
++            _set_model_used(data["model"])
+         choices = data.get("choices") or []
+         if choices and isinstance(choices[0], dict):
+             message = choices[0].get("message") or {}
+@@ -2494,6 +2688,7 @@ def chat_once(user_input: str) -> bool:
+     _last_assistant_text = assistant_text
+     _session_last_text[_current_session] = assistant_text
+     _save_session_atomic(_current_session)  # auto-save after every exchange
++    _report_model_used()
+     try:
+         _discord_auto_after_reply()
+     except Exception as e:  # a delivery problem must never break the chat itself
+diff --git a/pollenchat_guide.html b/pollenchat_guide.html
+index b1e54b5..401ac10 100644
+--- a/pollenchat_guide.html
++++ b/pollenchat_guide.html
+@@ -3,7 +3,7 @@
+ <head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-<title>NekoChat v2.8.18 詳細な使い方ガイド</title>
++<title>NekoChat v2.8.19 詳細な使い方ガイド</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+ <style>
+@@ -208,7 +208,7 @@ a:hover { text-decoration: underline; }
+ <body>
+ 
+ <header>
+-  <h1>NekoChat v2.8.18</h1>
++  <h1>NekoChat v2.8.19</h1>
+   <p>詳細な使い方ガイド — 複数の LLM サービスにつながるクリーンな CLI チャットクライアント</p>
+ </header>
+ 
+@@ -266,6 +266,8 @@ a:hover { text-decoration: underline; }
+ <span class="prompt">[+]</span> <span class="out">Select service (number or name, Enter=cancel): </span><span class="cmd">4</span>
+ <span class="info">[~] Mistral needs an API key.</span>
+ <span class="out">MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):</span>
++<span class="prompt">[+]</span> <span class="out">Check the key with Mistral now? (Y/n): </span>
++<span class="out">[OK] Mistral accepted the key.</span>
+ <span class="out">[OK] Key for mistral set for this session (...a1b2).</span>
+ <span class="prompt">[+]</span> <span class="out">Save to keys.json? (y/N): </span><span class="cmd">y</span>
+ <span class="out">[OK] Saved to keys.json (owner-only permissions).</span>
+@@ -318,7 +320,7 @@ a:hover { text-decoration: underline; }
+   </div>
+   <table>
+     <tr><th>サービス</th><th>環境変数</th><th>補足</th></tr>
+-    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402）</td></tr>
++    <tr><td>pollinations</td><td>なし</td><td>匿名の旧端点。ときどき不安定です（過去に HTTP 500 / 402 になったことがあります）</td></tr>
+     <tr><td>pollinations-key</td><td><code>POLLINATIONS_API_KEY</code></td><td><code>https://enter.pollinations.ai/keys</code> でキーを取得。モデルの一覧は、キーなしでも読めます</td></tr>
+     <tr><td>nvidia</td><td><code>NVIDIA_API_KEY</code></td><td><code>build.nvidia.com</code>。モデルIDは <code>meta/llama-...</code> のように組織名付き</td></tr>
+     <tr><td>mistral</td><td><code>MISTRAL_API_KEY</code></td><td><code>console.mistral.ai</code></td></tr>
+@@ -333,7 +335,22 @@ a:hover { text-decoration: underline; }
+     <li>OpenRouter の接尾辞は、ID の一部として、そのまま使えます。<code>:nitro</code>（いちばん速いプロバイダ）、<code>:floor</code>（いちばん安いプロバイダ）、<code>:free</code>（無料モデル）と、<code>~openai/gpt-latest</code> のような <code>~</code> 付きの別名です。</li>
+     <li>ID が <code>:free</code> で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。</li>
+     <li>キーは、<code>https://openrouter.ai/keys</code> で作ります。モデルの一覧は、キーなしでも、まず取得を試します。</li>
+-    <li>フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。</li>
++    <li><strong>ルーティングとフォールバック</strong>: OpenRouter は、追加のリクエスト項目を受け付けます。たとえば、<code>models</code>（失敗したときに、順に試す、別のモデルの配列）と、<code>provider</code>（ルーティング。たとえば <code>{"sort": "throughput"}</code>）です。<code>config.json</code> の <code>providers</code> に、<code>extra_body</code> として書くと、そのサービスの、<strong>すべてのリクエストに</strong>足されます。</li>
++  </ul>
++  <div class="terminal">
++<span class="out">{</span>
++<span class="out">  "providers": {</span>
++<span class="out">    "openrouter": {</span>
++<span class="out">      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},</span>
++<span class="out">      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}</span>
++<span class="out">    }</span>
++<span class="out">  }</span>
++<span class="out">}</span>
++  </div>
++  <ul>
++    <li>この設定で、<code>meta-llama/llama-3.3-70b-instruct:nitro</code> を選ぶと、まず、いちばん速いプロバイダで、そのモデルを試し、失敗したら、いちばん安い <code>gpt-4o-mini</code> のプロバイダに、切り替わります。<code>headers</code>（どちらも省略できます）は、OpenRouter に表示される、アプリ名などの、HTTP ヘッダを足します。</li>
++    <li><strong>実際に答えたモデル</strong>: 選んだモデルと違うモデルが答えたとき（フォールバック、<code>~</code> の別名、<code>openrouter/auto</code>）は、返信のあとに、<code>[model used: …]</code> と表示されます。料金は、実際に使われたモデルで決まるためです（同じモデルの日付つきの版や、<code>:floor</code> などの変種は、表示しません）。</li>
++    <li><strong>402</strong>: クレジットを使い切ったか、残高がマイナスです（無料モデルも、そのときは 402 になります）。</li>
+   </ul>
+ 
+   <h3>自分のサービスを追加する</h3>
+@@ -352,7 +369,8 @@ a:hover { text-decoration: underline; }
+ <span class="out">}</span>
+   </div>
+   <ul>
+-    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code></li>
++    <li>使える項目: <code>chat_url</code> / <code>models_url</code>（<code>null</code> で一覧なし）/ <code>key_env</code>（<code>null</code> でキー不要）/ <code>label</code> / <code>rate_hint</code> / <code>fail_hint</code> / <code>vars</code> / <code>extra_body</code> / <code>headers</code></li>
++    <li><code>extra_body</code> は、そのサービスの、すべてのリクエストに足す、固定の項目です（<code>model</code>、<code>messages</code>、<code>stream</code>、<code>temperature</code>、<code>max_tokens</code> は、NekoChat が決めるので、ここに書いても、無視されます）。<code>headers</code> は、HTTP ヘッダを足します（10個まで。<code>Authorization</code>、<code>Content-Type</code>、<code>User-Agent</code> などは、置き換えられません。<code>key</code>、<code>token</code>、<code>secret</code>、<code>auth</code>、<code>password</code> を含む名前は、認証情報とみなして、受け付けません。キーは <code>[key]</code> を使ってください）。設定があるサービスを <code>[service]</code> で選ぶと、そのことが表示されます。</li>
+     <li>URL の <code>${VAR}</code> は、環境変数、サービスの <code>vars</code> の順で埋められます。</li>
+     <li><code>https://</code> のみ（<code>localhost</code> に限り <code>http://</code> も可）。キーをここに書いても読まれません。</li>
+     <li>セッションは <code>サービス/モデルID</code> を覚えているので、別のマシンに移すときは <code>providers</code> も一緒に移してください。</li>
+@@ -791,10 +809,10 @@ a:hover { text-decoration: underline; }
+   <p>返信は少しずつ届きますが、その途中で、サービス側の都合でエラーになることがあります。赤い字で <code>Stream error: …</code> と原因が表示され、途中までの返信は、<strong>履歴に保存されません</strong>（<code>この応答は履歴に追加しませんでした</code> と出ます）。もう一度、同じ質問を送るか、別のモデルに切り替えてください。</p>
+ 
+   <h3>HTTP 500 / 402（PollinationsAI の匿名端点）</h3>
+-  <p>旧端点が停止している、または無料でなくなっている可能性があります。<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
++  <p>旧端点は、ときどき不安定で、過去に、停止したり、有料になったりしたことがあります。エラーが続くときは、少し待つか、<code>[service]</code> で別のサービスに切り替えるか、<code>POLLINATIONS_API_KEY</code> を設定して <code>pollinations-key</code> を使ってください。</p>
+ 
+   <h3>認証エラー（HTTP 401 / 403）</h3>
+-  <p>キーが違う、または期限切れです。<code>[key]</code> で入れ直してください（環境変数が優先されていないかも確認を。<code>[key]</code> の一覧に取得元が出ます）。</p>
++  <p>キーが違う、または期限切れです。メッセージに、使われたキーの取得元（<code>session</code>、<code>env</code>、<code>keys.json</code>）と、末尾4文字が出ます。<code>[key]</code> で入れ直してください（入れた直後に、そのサービスで確認できます）。環境変数が優先されていないかも、確認してください。</p>
+ 
+   <h3>モデルが応答しない</h3>
+   <p><code>[model]</code> で別のモデルに切り替えるか、<code>[service]</code> で別のサービスを試してください。モデルの可用性はサービスごとに変動します。</p>
+diff --git a/pollenchat_guide.md b/pollenchat_guide.md
+index a7a1a2f..ab72a8c 100644
+--- a/pollenchat_guide.md
++++ b/pollenchat_guide.md
+@@ -1,4 +1,4 @@
+-# NekoChat 使い方ガイド（v2.8.18）
++# NekoChat 使い方ガイド（v2.8.19）
+ 
+ NekoChat（スクリプト名は `pollenchat.py` のまま）は、複数の LLM サービスにつながるクリーンな CLI チャットクライアントです。PollinationsAI・NVIDIA・Mistral・Cloudflare Workers AI・OpenRouter を内蔵し、`config.json` で自分のサービスも追加できます。
+ 
+@@ -59,6 +59,8 @@ Services:
+ [+] Select service (number or name, Enter=cancel): 4
+ [~] Mistral needs an API key.
+ MISTRAL_API_KEY (input hidden, Enter=cancel, 'delete'=remove saved key):
++[+] Check the key with Mistral now? (Y/n):
++[OK] Mistral accepted the key.
+ [OK] Key for mistral set for this session (...a1b2).
+ [+] Save to keys.json? (y/N): y
+ [OK] Saved to keys.json (owner-only permissions).
+@@ -114,7 +116,7 @@ Services that need an API key:
+ 
+ | サービス | 環境変数 | 補足 |
+ |----------|----------|------|
+-| pollinations | なし | 匿名の旧端点。停止・有料化している可能性あり（HTTP 500 / 402） |
++| pollinations | なし | 匿名の旧端点。ときどき不安定です（過去に HTTP 500 / 402 になったことがあります） |
+ | pollinations-key | `POLLINATIONS_API_KEY` | `https://enter.pollinations.ai/keys` でキーを取得。モデルの一覧は、キーなしでも読めます |
+ | nvidia | `NVIDIA_API_KEY` | `build.nvidia.com`。モデルIDは `meta/llama-...` のように組織名付き |
+ | mistral | `MISTRAL_API_KEY` | `console.mistral.ai` |
+@@ -130,7 +132,20 @@ OpenRouter は、1つのキーで、たくさんのモデルを使えるサー
+ - OpenRouter の接尾辞は、ID の一部として、そのまま使えます。`:nitro`（いちばん速いプロバイダ）、`:floor`（いちばん安いプロバイダ）、`:free`（無料モデル）と、`~openai/gpt-latest` のような `~` 付きの別名です。
+ - ID が `:free` で終わるモデルには、制限があります。1分に20回まで、1日に50回まで（クレジットを10以上購入すると、1日1000回まで）です。残高がマイナスだと、無料モデルでも、HTTP 402 になります。これらの数字は、OpenRouter のドキュメントによるもので、変わることがあります。
+ - キーは、`https://openrouter.ai/keys` で作ります。モデルの一覧は、キーなしでも、まず取得を試します。
+-- フォールバック用のモデルの配列などの、ルーティングの設定は、まだ NekoChat からは指定できません。
++- **ルーティングとフォールバック**: OpenRouter は、追加のリクエスト項目を受け付けます。たとえば、`models`（失敗したときに、順に試す、別のモデルの配列）と、`provider`（ルーティング。たとえば `{"sort": "throughput"}`）です。`config.json` の `providers` に、`extra_body` として書くと、そのサービスの、**すべてのリクエストに**足されます。
++```json
++{
++  "providers": {
++    "openrouter": {
++      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},
++      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}
++    }
++  }
++}
++```
++  この設定で、`meta-llama/llama-3.3-70b-instruct:nitro` を選ぶと、まず、いちばん速いプロバイダで、そのモデルを試し、失敗したら、いちばん安い `gpt-4o-mini` のプロバイダに、切り替わります。`headers`（どちらも省略できます）は、OpenRouter に表示される、アプリ名などの、HTTP ヘッダを足します。
++- **実際に答えたモデル**: 選んだモデルと違うモデルが答えたとき（フォールバック、`~` の別名、`openrouter/auto`）は、返信のあとに、`[model used: …]` と表示されます。料金は、実際に使われたモデルで決まるためです（同じモデルの日付つきの版や、`:floor` などの変種は、表示しません）。
++- **402**: クレジットを使い切ったか、残高がマイナスです（無料モデルも、そのときは 402 になります）。
+ 
+ ### 自分のサービスを追加する
+ 
+@@ -150,7 +165,8 @@ OpenRouter は、1つのキーで、たくさんのモデルを使えるサー
+ }
+ ```
+ 
+-- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars`
++- 使える項目: `chat_url` / `models_url`（`null` で一覧なし）/ `key_env`（`null` でキー不要）/ `label` / `rate_hint` / `fail_hint` / `vars` / `extra_body` / `headers`
++- `extra_body` は、そのサービスの、すべてのリクエストに足す、固定の項目です（`model`、`messages`、`stream`、`temperature`、`max_tokens` は、NekoChat が決めるので、ここに書いても、無視されます）。`headers` は、HTTP ヘッダを足します（10個まで。`Authorization`、`Content-Type`、`User-Agent` などは、置き換えられません。`key`、`token`、`secret`、`auth`、`password` を含む名前は、認証情報とみなして、受け付けません。キーは `[key]` を使ってください）。設定があるサービスを `[service]` で選ぶと、そのことが表示されます。
+ - URL の `${VAR}` は、環境変数、サービスの `vars` の順で埋められます。
+ - `https://` のみ（`localhost` に限り `http://` も可）。キーをここに書いても読まれません。
+ - セッションは `サービス/モデルID` を覚えているので、別のマシンに移すときは `providers` も一緒に移してください。
+@@ -597,11 +613,11 @@ Bye bye, Taro!
+ 
+ ### HTTP 500 / 402（PollinationsAI の匿名端点）
+ 
+-旧端点が停止している、または無料でなくなっている可能性があります。`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
++旧端点は、ときどき不安定で、過去に、停止したり、有料になったりしたことがあります。エラーが続くときは、少し待つか、`[service]` で別のサービスに切り替えるか、`POLLINATIONS_API_KEY` を設定して `pollinations-key` を使ってください。
+ 
+ ### 認証エラー（HTTP 401 / 403）
+ 
+-キーが違う、または期限切れです。`[key]` で入れ直してください（環境変数が優先されていないかも確認を。`[key]` の一覧に取得元が出ます）。
++キーが違う、または期限切れです。メッセージに、使われたキーの取得元（`session`、`env`、`keys.json`）と、末尾4文字が出ます。`[key]` で入れ直してください（入れた直後に、そのサービスで確認できます）。環境変数が優先されていないかも、確認してください。
+ 
+ ### モデルが応答しない
+ 
+diff --git a/usage.txt b/usage.txt
+index 25b3ee4..ca5561e 100644
+--- a/usage.txt
++++ b/usage.txt
+@@ -33,4 +33,4 @@
+ [exit]       — 終了（全セッション自動保存）
+ 
+ ※ 会話は1往復ごとに自動保存されるので、[exit]しなくても履歴は失われません。
+-※ v2.8.18〜
++※ v2.8.19〜

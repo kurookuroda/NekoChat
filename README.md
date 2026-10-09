@@ -1,4 +1,4 @@
-# NekoChat v2.8.18
+# NekoChat v2.8.19
 
 A clean, harmless CLI chat client for several LLM services.
 
@@ -50,7 +50,7 @@ Type `[service]` to see the services, pick one, enter its API key if it needs on
 
 | Service | Key | Notes |
 |---------|-----|-------|
-| `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It may be down or no longer free (HTTP 500 / 402) — switch service if so |
+| `pollinations` | none | Anonymous legacy endpoint (`text.pollinations.ai`). It has been unstable at times (HTTP 500 / 402 in the past); if it fails, retry later or switch service |
 | `pollinations-key` | `POLLINATIONS_API_KEY` | `gen.pollinations.ai`; keys at https://enter.pollinations.ai/keys. The model list can be read without a key |
 | `nvidia` | `NVIDIA_API_KEY` | Key from build.nvidia.com. Model IDs include the organisation, e.g. `meta/llama-...` |
 | `mistral` | `MISTRAL_API_KEY` | Key from console.mistral.ai |
@@ -61,7 +61,22 @@ Free-tier limits differ per service and change over time; check each service's o
 
 ### OpenRouter
 
-OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. Routing options such as a list of fallback models are not configurable from NekoChat yet.
+OpenRouter routes one API key to many models. Write a model as `openrouter/` followed by OpenRouter's own model ID, for example `openrouter/openai/gpt-4o-mini` — normally you simply pick it from the list that `[service]` / `[model]` shows (the list uses the real model IDs, not the display names). OpenRouter's suffixes work as part of the ID: `:nitro` (fastest provider), `:floor` (cheapest provider) and `:free` (free models), as do `~` aliases such as `~openai/gpt-latest`. Models whose ID ends in `:free` are limited to about 20 requests per minute and 50 per day (1000 per day once 10 or more credits have been bought); a negative balance gives HTTP 402 even for free models. These numbers come from OpenRouter's documentation and may change. 
+
+**Routing and fallbacks.** OpenRouter takes extra request fields — for example `models` (a list of fallback models, tried in order) and `provider` (routing, e.g. `{"sort": "throughput"}`). Put them in the `providers` block of `config.json` as `extra_body`; they are added to every request of that service:
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "extra_body": {"models": ["openai/gpt-4o-mini:floor"], "provider": {"allow_fallbacks": true}},
+      "headers": {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "NekoChat"}
+    }
+  }
+}
+```
+
+With this, picking `meta-llama/llama-3.3-70b-instruct:nitro` tries that model on the fastest provider first and falls back to the cheapest `gpt-4o-mini` provider if it fails. `headers` (both are optional) adds HTTP headers such as the app name shown on OpenRouter. When another model than the one you picked answers — a fallback, a `~` alias, `openrouter/auto` — NekoChat prints `[model used: …]` after the reply, because the cost follows the model that was actually used. (A dated snapshot of the same model, or a `:floor`-type variant, is not reported.) A 402 means the credits are used up or the balance is negative; free models answer 402 then too.
 
 ### Where the key comes from
 
@@ -71,7 +86,7 @@ NekoChat looks for a service's key in this order:
 2. The environment variable above (e.g. `export NVIDIA_API_KEY=...`, which also works from `~/.bashrc` in Termux)
 3. `keys.json`
 
-`[key]` shows which source is in use (only the last 4 characters of a key are displayed), reads the key with hidden input, and asks whether to save it to `keys.json`. Enter `delete` at the key prompt to remove a stored key. `keys.json` is created with owner-only permissions and is listed in `.gitignore`. If you ever committed a real key, revoke it — Git history keeps it.
+`[key]` shows which source is in use (only the last 4 characters of a key are displayed), reads the key with hidden input, and, for services that can tell (OpenRouter, NVIDIA, Mistral, and custom services with a model list that needs a key), offers to check the key with the service right away — a key the service rejects is not kept. Then it asks whether to save it to `keys.json`. Enter `delete` at the key prompt to remove a stored key. A 401 from the service names where the key in use came from and its last 4 characters. `keys.json` is created with owner-only permissions and is listed in `.gitignore`. If you ever committed a real key, revoke it — Git history keeps it.
 
 ### Model names
 
@@ -100,7 +115,8 @@ An optional `providers` block defines your own OpenAI-compatible services or ove
 }
 ```
 
-- Fields: `chat_url`, `models_url` (`null` = no list), `key_env` (`null` = no key), `label`, `rate_hint`, `fail_hint`, `vars`.
+- Fields: `chat_url`, `models_url` (`null` = no list), `key_env` (`null` = no key), `label`, `rate_hint`, `fail_hint`, `vars`, `extra_body` and `headers`.
+- `extra_body` is an object of fixed fields added to every request of that service (`model`, `messages`, `stream`, `temperature` and `max_tokens` stay under NekoChat's control and are ignored there). `headers` adds HTTP headers (at most 10; `Authorization`, `Content-Type`, `User-Agent` and similar cannot be replaced, and names that look like credentials — `key`, `token`, `secret`, `auth`, `password` — are refused: use `[key]`). `[service]` tells you when a service has them.
 - `${VAR}` in a URL is filled from the environment first, then from the service's `vars`.
 - Only `https://` URLs are accepted (plain `http://` only for `localhost`). Service names use `a-z`, `0-9` and `-`.
 - Keys are **not** read from this block — use `[key]`, `keys.json` or environment variables. Invalid entries are skipped with a warning at startup.
